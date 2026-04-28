@@ -2,6 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/hono-dpop)](https://www.npmjs.com/package/hono-dpop)
 [![CI](https://github.com/paveg/hono-dpop/actions/workflows/ci.yml/badge.svg)](https://github.com/paveg/hono-dpop/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/paveg/hono-dpop/graph/badge.svg)](https://codecov.io/gh/paveg/hono-dpop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 DPoP ([RFC 9449](https://www.rfc-editor.org/rfc/rfc9449)) proof-of-possession middleware for [Hono](https://hono.dev).
