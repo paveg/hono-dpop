@@ -1,0 +1,51 @@
+# hono-dpop
+
+DPoP (Demonstrating Proof-of-Possession, RFC 9449) middleware for Hono.
+
+## What it does
+
+Verifies the `DPoP` proof JWT on incoming requests:
+
+1. Parse the `DPoP` header as a JWT
+2. Validate the JWT header (`typ=dpop+jwt`, `alg` is asymmetric, `jwk` present)
+3. Verify the signature using the embedded `jwk`
+4. Validate claims: `htm` matches request method, `htu` matches request URL, `iat` is within tolerance window
+5. Check `jti` against the replay-cache store
+6. If `Authorization: DPoP <token>` is present, verify `ath = base64url(SHA-256(token))`
+7. Expose the verified proof and JWK thumbprint on `c.get("dpop")`
+
+The middleware does NOT introspect the access token itself — that remains the caller's responsibility. Use the exposed `c.get("dpop").jkt` to compare against your access token's `cnf.jkt` claim.
+
+## Public API
+
+```ts
+import { dpop, DPoPErrors, problemResponse } from "hono-dpop";
+import { memoryNonceStore } from "hono-dpop/stores/memory";
+import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof, ProblemDetail } from "hono-dpop";
+
+app.use("/api/*", dpop({
+  nonceStore: memoryNonceStore(),
+  iatTolerance: 60,
+  jtiTtl: 5 * 60_000,
+}));
+
+app.get("/api/me", (c) => {
+  const proof = c.get("dpop"); // DPoPVerifiedProof | undefined
+  return c.json({ jkt: proof?.jkt });
+});
+```
+
+## Errors
+
+All errors are RFC 9457 Problem Details with `Content-Type: application/problem+json` and an RFC 9449 `WWW-Authenticate: DPoP error="..."` header.
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `INVALID_DPOP_PROOF` | Header missing/malformed, signature invalid, claims invalid |
+| 401 | `MISSING_ACCESS_TOKEN` | `requireAccessToken: true` and `Authorization: DPoP` missing |
+| 401 | `ATH_MISMATCH` | `ath` claim does not match SHA-256 of access token |
+| 401 | `JTI_REPLAY` | `jti` already used within window |
+
+## Cross-runtime
+
+Uses Web Crypto only (no `node:crypto`, no JOSE library). Works on Node.js ≥20, Cloudflare Workers, Deno, Bun, and any Web Standards runtime.
