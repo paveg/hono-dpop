@@ -1,0 +1,16 @@
+{
+	"name": "hono-dpop-bun-example",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "bun run src/index.ts"
+	},
+	"dependencies": {
+		"hono": "^4.12.14",
+		"hono-dpop": "file:../.."
+	},
+	"devDependencies": {
+		"@types/bun": "^1.1.14",
+		"typescript": "^5.9.3"
+	}
+}

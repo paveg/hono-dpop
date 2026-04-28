@@ -1,0 +1,18 @@
+{
+	"name": "hono-dpop-cloudflare-example",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy"
+	},
+	"dependencies": {
+		"hono": "^4.12.14",
+		"hono-dpop": "file:../.."
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20250101.0",
+		"typescript": "^5.9.3",
+		"wrangler": "^3.99.0"
+	}
+}
