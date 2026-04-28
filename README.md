@@ -87,7 +87,7 @@ All errors follow [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9
 
 | Status | Code | `error=` | When |
 |--------|------|----------|------|
-| 400 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk) |
+| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk) |
 | 401 | `MISSING_ACCESS_TOKEN` | `invalid_token` | `requireAccessToken: true` and `Authorization: DPoP` missing |
 | 401 | `ATH_MISMATCH` | `invalid_token` | `ath` claim does not match SHA-256 of access token |
 | 401 | `JTI_REPLAY` | `invalid_dpop_proof` | `jti` already used within `jtiTtl` window |
@@ -167,6 +167,14 @@ app.get("/api/me", (c) => {
 - It does **not** introspect or validate the access token. Use a separate middleware (e.g., your bearer/JWT verifier) to validate the access token, then compare the access token's `cnf.jkt` claim against `c.get("dpop").jkt` to enforce DPoP binding.
 - It does **not** issue server nonces (`use_dpop_nonce`). This may be added in a future release; for now the middleware accepts requests without a nonce challenge round-trip.
 - It does **not** verify multi-segment proxies. Use `getRequestUrl` to provide the canonical external URL when behind a reverse proxy.
+
+## Documentation
+
+- [ADR-0001: No jose dependency](./docs/adr/0001-no-jose-dependency.md)
+- [ADR-0002: RFC 9457 Problem Details](./docs/adr/0002-rfc-9457-problem-details.md)
+- [ADR-0003: 401 for all proof failures](./docs/adr/0003-401-for-all-proof-failures.md)
+- [ADR-0004: jti replay via pluggable store](./docs/adr/0004-jti-replay-via-pluggable-store.md)
+- [Threat model](./docs/security/threat-model.md)
 
 ## License
 

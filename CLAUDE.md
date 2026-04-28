@@ -52,3 +52,11 @@ ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA. `none`, `H
 - Error responses: RFC 9457 `application/problem+json` + RFC 9449 `WWW-Authenticate: DPoP` semantics
 - Versioning: changesets (`pnpm changeset`)
 - GitHub comments and code comments in English
+
+## Decisions
+
+- [ADR-0001: No jose dependency](./docs/adr/0001-no-jose-dependency.md) — Web Crypto only
+- [ADR-0002: RFC 9457 Problem Details](./docs/adr/0002-rfc-9457-problem-details.md) — error format + optional hono-problem-details integration
+- [ADR-0003: 401 for all proof failures](./docs/adr/0003-401-for-all-proof-failures.md) — RFC 9449 §7.1 convention
+- [ADR-0004: jti replay via pluggable store](./docs/adr/0004-jti-replay-via-pluggable-store.md) — single-method `check(jti, expiresAt)` interface
+- [Threat model](./docs/security/threat-model.md) — what we defend, what's left to the caller
