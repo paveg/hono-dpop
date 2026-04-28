@@ -121,6 +121,25 @@ const customStore: DPoPNonceStore = {
 };
 ```
 
+## Benchmarks
+
+```bash
+pnpm vitest bench
+```
+
+Representative numbers from a recent run (Apple M-series, Node 24):
+
+```
+parseProof                       ~370,000 ops/sec
+jwkThumbprint ES256              ~130,000 ops/sec
+verifyProofSignature RS256       ~ 22,000 ops/sec
+verifyProofSignature ES256       ~ 12,000 ops/sec
+verifyProofSignature ES512       ~  1,100 ops/sec
+memoryNonceStore.check (10k)   ~1,800,000 ops/sec
+```
+
+The store is a Map lookup, so its throughput is independent of population. Verification cost is dominated by the curve / modulus.
+
 ## Accessing the Verified Proof in Handlers
 
 ```ts
