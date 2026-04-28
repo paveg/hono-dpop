@@ -26,12 +26,23 @@
 				"types": "./dist/stores/memory.d.cts",
 				"default": "./dist/stores/memory.cjs"
 			}
+		},
+		"./stores/redis": {
+			"import": {
+				"types": "./dist/stores/redis.d.ts",
+				"default": "./dist/stores/redis.js"
+			},
+			"require": {
+				"types": "./dist/stores/redis.d.cts",
+				"default": "./dist/stores/redis.cjs"
+			}
 		}
 	},
 	"sideEffects": false,
 	"typesVersions": {
 		"*": {
-			"stores/memory": ["./dist/stores/memory.d.ts"]
+			"stores/memory": ["./dist/stores/memory.d.ts"],
+			"stores/redis": ["./dist/stores/redis.d.ts"]
 		}
 	},
 	"files": ["dist"],
