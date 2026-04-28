@@ -2,7 +2,8 @@ export type DPoPErrorCode =
 	| "INVALID_DPOP_PROOF"
 	| "MISSING_ACCESS_TOKEN"
 	| "ATH_MISMATCH"
-	| "JTI_REPLAY";
+	| "JTI_REPLAY"
+	| "USE_NONCE";
 
 export interface ProblemDetail {
 	type: string;
@@ -12,6 +13,10 @@ export interface ProblemDetail {
 	code: DPoPErrorCode;
 	/** Value for the `error` parameter of the WWW-Authenticate: DPoP header (RFC 9449 §7.1). */
 	wwwAuthError: string;
+	/** Extra parameters merged into the WWW-Authenticate header (e.g., `nonce`, `algs`). */
+	wwwAuthExtras?: Record<string, string>;
+	/** Extra response headers to set on the error response (e.g., `DPoP-Nonce`). */
+	additionalHeaders?: Record<string, string>;
 }
 
 /** Clamp HTTP status to 200-599 integer range; returns 500 for out-of-range or non-integer values. */
@@ -51,9 +56,14 @@ export function problemResponse(problem: ProblemDetail, extras?: ProblemResponse
 		body = '{"title":"Internal Server Error","status":500}';
 		status = 500;
 	}
+	const mergedAuthExtras = { ...problem.wwwAuthExtras, ...extras?.wwwAuthExtras };
 	const headers: Record<string, string> = {
 		"Content-Type": PROBLEM_CONTENT_TYPE,
-		"WWW-Authenticate": wwwAuthenticateHeader(problem.wwwAuthError, extras?.wwwAuthExtras),
+		"WWW-Authenticate": wwwAuthenticateHeader(
+			problem.wwwAuthError,
+			Object.keys(mergedAuthExtras).length > 0 ? mergedAuthExtras : undefined,
+		),
+		...problem.additionalHeaders,
 		...extras?.extraHeaders,
 	};
 	return new Response(body, { status, headers });
@@ -111,6 +121,18 @@ export const DPoPErrors = {
 			detail: "The jti has been used within the replay window",
 			code: "JTI_REPLAY",
 			wwwAuthError: "invalid_dpop_proof",
+		};
+	},
+	useNonce(freshNonce: string): ProblemDetail {
+		return {
+			type: `${BASE_URL}/use-nonce`,
+			title: "DPoP nonce required",
+			status: 401,
+			detail: "Resource server requires a server-issued nonce in the DPoP proof",
+			code: "USE_NONCE",
+			wwwAuthError: "use_dpop_nonce",
+			wwwAuthExtras: { nonce: freshNonce },
+			additionalHeaders: { "DPoP-Nonce": freshNonce },
 		};
 	},
 } as const;

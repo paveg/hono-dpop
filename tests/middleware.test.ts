@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { dpop } from "../src/middleware.js";
 import { memoryNonceStore } from "../src/stores/memory.js";
-import type { DPoPNonceStore } from "../src/stores/types.js";
+import type { DPoPNonceStore, NonceProvider } from "../src/stores/types.js";
 import type { DPoPOptions } from "../src/types.js";
 import { computeAth } from "../src/verify.js";
 import { freshJti, generateKeyPair, nowSeconds, signProof } from "./helpers.js";
@@ -26,6 +26,7 @@ async function makeProof(
 		jti?: string;
 		iat?: number;
 		ath?: string;
+		nonce?: string;
 	} = {},
 ) {
 	const keyPair = await generateKeyPair("ES256");
@@ -39,6 +40,7 @@ async function makeProof(
 			htu: url,
 			iat: opts.iat ?? nowSeconds(),
 			ath: opts.ath,
+			nonce: opts.nonce,
 		},
 	});
 	return { jwt, keyPair };
@@ -244,5 +246,51 @@ describe("dpop middleware", () => {
 		const { jwt } = await makeProof();
 		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
 		expect(res.status).toBe(500);
+	});
+
+	it("rejects multiple DPoP headers (comma-joined)", async () => {
+		const { app } = createApp();
+		const { jwt } = await makeProof();
+		const { jwt: jwt2 } = await makeProof();
+		const res = await app.request("https://localhost/api/me", {
+			headers: { DPoP: `${jwt}, ${jwt2}` },
+		});
+		expect(res.status).toBe(401);
+		expect((await res.json()).detail).toMatch(/multiple DPoP headers/);
+	});
+
+	describe("nonceProvider (RFC 9449 §8)", () => {
+		const constantProvider = (nonce: string): NonceProvider => ({
+			issueNonce: () => nonce,
+			isValid: (n) => n === nonce,
+		});
+
+		it("rejects proof without nonce when provider is set", async () => {
+			const { app } = createApp({ nonceProvider: constantProvider("server-nonce-1") });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string };
+			expect(body.code).toBe("USE_NONCE");
+			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-1");
+			expect(res.headers.get("WWW-Authenticate")).toContain("use_dpop_nonce");
+			expect(res.headers.get("WWW-Authenticate")).toContain('nonce="server-nonce-1"');
+		});
+
+		it("rejects proof with invalid nonce and reissues", async () => {
+			const { app } = createApp({ nonceProvider: constantProvider("server-nonce-2") });
+			const { jwt } = await makeProof({ nonce: "wrong-nonce" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-2");
+		});
+
+		it("accepts proof with valid nonce and echoes nonce on success", async () => {
+			const { app } = createApp({ nonceProvider: constantProvider("server-nonce-3") });
+			const { jwt } = await makeProof({ nonce: "server-nonce-3" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-3");
+		});
 	});
 });

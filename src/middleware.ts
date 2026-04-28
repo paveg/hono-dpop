@@ -1,8 +1,15 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { getHonoProblemDetails } from "./compat.js";
-import { DPoPErrors, DPoPProofError, type ProblemDetail, problemResponse } from "./errors.js";
+import {
+	DPoPErrors,
+	DPoPProofError,
+	type ProblemDetail,
+	problemResponse,
+	wwwAuthenticateHeader,
+} from "./errors.js";
 import { type JwsAlgorithm, SUPPORTED_ALGORITHMS, jwkThumbprint } from "./jwk.js";
+import type { NonceProvider } from "./stores/types.js";
 import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof } from "./types.js";
 import {
 	type ParsedProof,
@@ -17,6 +24,7 @@ import {
 const DEFAULT_IAT_TOLERANCE = 60;
 const DEFAULT_JTI_TTL_MS = 5 * 60_000;
 const DPOP_HEADER = "DPoP";
+const DPOP_NONCE_HEADER = "DPoP-Nonce";
 const AUTHORIZATION_HEADER = "Authorization";
 const DPOP_AUTH_PREFIX = "DPoP ";
 
@@ -30,6 +38,7 @@ export function dpop(options: DPoPOptions) {
 		getAccessToken,
 		requireAccessToken = false,
 		onError,
+		nonceProvider,
 	} = options;
 
 	const allowed = new Set<JwsAlgorithm>(algorithms);
@@ -40,6 +49,14 @@ export function dpop(options: DPoPOptions) {
 		const proofHeader = c.req.header(DPOP_HEADER);
 		if (!proofHeader) {
 			return errorResponse(DPoPErrors.invalidProof("DPoP header is missing"));
+		}
+
+		// RFC 9449 §4.3: exactly one DPoP header. The Headers API joins multiple
+		// same-name headers with ", "; DPoP proofs are base64url-only and never
+		// contain commas, so a comma-space sequence is a positive signal of
+		// header smuggling.
+		if (proofHeader.includes(", ")) {
+			return errorResponse(DPoPErrors.invalidProof("multiple DPoP headers are not allowed"));
 		}
 
 		let parsed: ParsedProof;
@@ -58,6 +75,18 @@ export function dpop(options: DPoPOptions) {
 		} catch (err) {
 			if (err instanceof DPoPProofError) return errorResponse(err.problem);
 			throw err;
+		}
+
+		// Nonce challenge (RFC 9449 §8). Run after sig verification so that we
+		// only mint nonces for cryptographically valid proofs — prevents nonce
+		// flooding from unauthenticated clients.
+		if (nonceProvider) {
+			const nonceClaim = parsed.payload.nonce;
+			const nonceOk =
+				typeof nonceClaim === "string" && (await nonceProvider.isValid(nonceClaim, c));
+			if (!nonceOk) {
+				return errorResponse(DPoPErrors.useNonce(await nonceProvider.issueNonce(c)));
+			}
 		}
 
 		const accessToken = await resolveAccessToken(c, getAccessToken);
@@ -95,8 +124,19 @@ export function dpop(options: DPoPOptions) {
 			raw: parsed.raw,
 		};
 		c.set("dpop", verified);
+
 		await next();
+
+		// Echo the current nonce on success so clients learn it without an extra
+		// challenge round-trip (RFC 9449 §8 recommendation).
+		if (nonceProvider) {
+			await setSuccessNonce(c, nonceProvider);
+		}
 	});
+}
+
+async function setSuccessNonce(c: Context, provider: NonceProvider): Promise<void> {
+	c.res.headers.set(DPOP_NONCE_HEADER, await provider.issueNonce(c));
 }
 
 async function resolveAccessToken(
@@ -130,7 +170,15 @@ async function respondWithProblem(
 				extensions: { code: problem.code },
 			})
 			.getResponse();
-		response.headers.set("WWW-Authenticate", `DPoP error="${problem.wwwAuthError}"`);
+		response.headers.set(
+			"WWW-Authenticate",
+			wwwAuthenticateHeader(problem.wwwAuthError, problem.wwwAuthExtras),
+		);
+		if (problem.additionalHeaders) {
+			for (const [k, v] of Object.entries(problem.additionalHeaders)) {
+				response.headers.set(k, v);
+			}
+		}
 		return response;
 	}
 	return problemResponse(problem);

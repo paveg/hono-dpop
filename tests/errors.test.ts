@@ -95,6 +95,7 @@ describe("DPoPErrors registry", () => {
 			DPoPErrors.missingAccessToken(),
 			DPoPErrors.athMismatch(),
 			DPoPErrors.jtiReplay(),
+			DPoPErrors.useNonce("nonce-value"),
 		];
 		for (const p of all) {
 			expect(p.type).toMatch(/^https:\/\//);
@@ -103,5 +104,41 @@ describe("DPoPErrors registry", () => {
 			expect(p.code.length).toBeGreaterThan(0);
 			expect(p.wwwAuthError.length).toBeGreaterThan(0);
 		}
+	});
+});
+
+describe("DPoPErrors.useNonce", () => {
+	it("carries nonce in WWW-Authenticate extras and DPoP-Nonce header", () => {
+		const problem = DPoPErrors.useNonce("the-nonce");
+		expect(problem.code).toBe("USE_NONCE");
+		expect(problem.wwwAuthError).toBe("use_dpop_nonce");
+		expect(problem.wwwAuthExtras).toEqual({ nonce: "the-nonce" });
+		expect(problem.additionalHeaders).toEqual({ "DPoP-Nonce": "the-nonce" });
+	});
+
+	it("problemResponse echoes both headers", () => {
+		const res = problemResponse(DPoPErrors.useNonce("abc"));
+		expect(res.headers.get("WWW-Authenticate")).toContain('error="use_dpop_nonce"');
+		expect(res.headers.get("WWW-Authenticate")).toContain('nonce="abc"');
+		expect(res.headers.get("DPoP-Nonce")).toBe("abc");
+	});
+});
+
+describe("problemResponse — additionalHeaders + wwwAuthExtras from ProblemDetail", () => {
+	it("propagates ProblemDetail.additionalHeaders into the response", () => {
+		const problem = {
+			...DPoPErrors.invalidProof("x"),
+			additionalHeaders: { "X-Foo": "bar" },
+		};
+		const res = problemResponse(problem);
+		expect(res.headers.get("X-Foo")).toBe("bar");
+	});
+
+	it("merges ProblemDetail.wwwAuthExtras with caller-supplied extras", () => {
+		const problem = { ...DPoPErrors.invalidProof("x"), wwwAuthExtras: { algs: "ES256" } };
+		const res = problemResponse(problem, { wwwAuthExtras: { realm: "api" } });
+		const auth = res.headers.get("WWW-Authenticate");
+		expect(auth).toContain('algs="ES256"');
+		expect(auth).toContain('realm="api"');
 	});
 });

@@ -16,14 +16,15 @@ DPoP (Demonstrating Proof-of-Possession, [RFC 9449](https://www.rfc-editor.org/r
 
 ## Architecture
 
-- `src/middleware.ts` — `dpop()` factory: header extraction, parse, signature/claims verification, jti replay check, optional access-token (`ath`) binding
+- `src/middleware.ts` — `dpop()` factory: header presence + multi-header guard, parse, signature/claims verification, optional nonce challenge, optional access-token (`ath`) binding, jti replay check, success-path `DPoP-Nonce` echo
 - `src/verify.ts` — Pure proof verification: `parseProof`, `verifyProofSignature`, `verifyProofClaims`, `computeAth`
 - `src/jwk.ts` — JWK validation, RFC 7638 thumbprint, WebCrypto algorithm mapping
 - `src/base64url.ts` — `base64urlEncode` / `base64urlDecode` (no-pad)
-- `src/errors.ts` — RFC 9457 Problem Details with `DPoPErrorCode` and RFC 9449 `WWW-Authenticate: DPoP error="..."` headers
-- `src/stores/types.ts` — `DPoPNonceStore` interface (`check`, `purge`)
+- `src/errors.ts` — RFC 9457 Problem Details with `DPoPErrorCode` and RFC 9449 `WWW-Authenticate: DPoP error="..."` headers; `ProblemDetail` carries optional `wwwAuthExtras` and `additionalHeaders` so error constructors (e.g. `useNonce`) can attach `nonce` and `DPoP-Nonce`
+- `src/stores/types.ts` — `DPoPNonceStore` interface (`check`, `purge`) and `NonceProvider` interface (`issueNonce`, `isValid`)
 - `src/stores/memory.ts` — In-process replay cache with TTL sweep
-- `src/types.ts` — `DPoPOptions`, `DPoPProof`, `DPoPEnv`, `DPoPVerifiedProof`
+- `src/stores/memory-nonce-provider.ts` — In-process server nonce provider with rotation and previous-nonce grace
+- `src/types.ts` — `DPoPOptions` (with `nonceProvider`), `DPoPProof`, `DPoPEnv`, `DPoPVerifiedProof`
 
 ### Algorithms
 
@@ -41,6 +42,7 @@ ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA. `none`, `H
 | `getRequestUrl` | `(c: Context) => string` | Override for reverse-proxy scenarios; default uses `c.req.url` |
 | `requireAccessToken` | `boolean` | Reject when `Authorization: DPoP` missing (default: `false`) |
 | `onError` | `(error: ProblemDetail, c: Context) => Response \| Promise<Response>` | Custom error response |
+| `nonceProvider` | `NonceProvider` | Server-issued nonce challenge (RFC 9449 §8). When set, missing/invalid `nonce` claims trigger `use_dpop_nonce` 401 with a fresh `DPoP-Nonce` header |
 
 ## Conventions
 

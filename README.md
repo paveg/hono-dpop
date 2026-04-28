@@ -78,6 +78,12 @@ dpop({
 
   // Custom error response (default: RFC 9457 Problem Details)
   onError: (error, c) => c.json({ error: error.code }, error.status),
+
+  // Server-issued nonce challenge (RFC 9449 §8). When set, proofs missing or
+  // with an invalid `nonce` claim are rejected with `error="use_dpop_nonce"`
+  // and a fresh nonce in the `DPoP-Nonce` response header. Successful
+  // responses also echo the current nonce.
+  nonceProvider: memoryNonceProvider({ rotateAfter: 5 * 60_000 }),
 });
 ```
 
@@ -87,10 +93,11 @@ All errors follow [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9
 
 | Status | Code | `error=` | When |
 |--------|------|----------|------|
-| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk) |
+| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk), multiple `DPoP` headers |
 | 401 | `MISSING_ACCESS_TOKEN` | `invalid_token` | `requireAccessToken: true` and `Authorization: DPoP` missing |
 | 401 | `ATH_MISMATCH` | `invalid_token` | `ath` claim does not match SHA-256 of access token |
 | 401 | `JTI_REPLAY` | `invalid_dpop_proof` | `jti` already used within `jtiTtl` window |
+| 401 | `USE_NONCE` | `use_dpop_nonce` | `nonceProvider` is set and proof has no current `nonce` claim. Response carries a fresh `DPoP-Nonce` header and `nonce="..."` parameter on `WWW-Authenticate`. |
 
 When [hono-problem-details](https://github.com/paveg/hono-problem-details) is installed, error responses are generated using its `problemDetails().getResponse()`. Otherwise, a built-in fallback is used. No configuration needed — detection is automatic.
 
@@ -118,6 +125,33 @@ const customStore: DPoPNonceStore = {
   // Atomically: returns true if jti was NOT seen, false if already seen.
   async check(jti, expiresAt) { /* ... */ },
   async purge() { /* return number of removed entries */ },
+};
+```
+
+### Nonce Provider (RFC 9449 §8)
+
+Optional. When set, the middleware emits `use_dpop_nonce` challenges and validates the `nonce` claim on subsequent proofs.
+
+```ts
+import { dpop, memoryNonceProvider } from "hono-dpop";
+
+app.use("/api/*", dpop({
+  nonceStore: memoryNonceStore(),
+  nonceProvider: memoryNonceProvider({
+    rotateAfter: 5 * 60_000, // ms (default: 5 min)
+    retainPrevious: true,    // accept the previous nonce too (default: true)
+  }),
+}));
+```
+
+For multi-instance deployments, implement `NonceProvider` against a shared store:
+
+```ts
+import type { NonceProvider } from "hono-dpop";
+
+const customProvider: NonceProvider = {
+  async issueNonce(c) { /* return a fresh nonce string */ },
+  async isValid(nonce, c) { /* return true for currently/recently valid nonces */ },
 };
 ```
 
@@ -165,7 +199,6 @@ app.get("/api/me", (c) => {
 ## What this middleware does NOT do
 
 - It does **not** introspect or validate the access token. Use a separate middleware (e.g., your bearer/JWT verifier) to validate the access token, then compare the access token's `cnf.jkt` claim against `c.get("dpop").jkt` to enforce DPoP binding.
-- It does **not** issue server nonces (`use_dpop_nonce`). This may be added in a future release; for now the middleware accepts requests without a nonce challenge round-trip.
 - It does **not** verify multi-segment proxies. Use `getRequestUrl` to provide the canonical external URL when behind a reverse proxy.
 
 ## Documentation
