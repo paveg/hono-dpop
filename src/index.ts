@@ -24,3 +24,5 @@ export type { DPoPNonceStore, NonceProvider } from "./stores/types.js";
 export type { MemoryNonceStore, MemoryNonceStoreOptions } from "./stores/memory.js";
 export { memoryNonceProvider } from "./stores/memory-nonce-provider.js";
 export type { MemoryNonceProviderOptions } from "./stores/memory-nonce-provider.js";
+export { assertJktBinding, verifyJktBinding } from "./jkt-binding.js";
+export type { AccessTokenClaimsWithCnf } from "./jkt-binding.js";

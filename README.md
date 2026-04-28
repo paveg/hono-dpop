@@ -103,6 +103,25 @@ dpop({
 });
 ```
 
+### Helpers
+
+```ts
+import { assertJktBinding, verifyJktBinding } from "hono-dpop";
+
+// Throwing variant — pipes through the standard 401 + WWW-Authenticate path:
+app.get("/api/me", (c) => {
+  const proof = c.get("dpop")!;
+  const claims = await verifyMyAccessToken(c.req.header("Authorization"));
+  assertJktBinding(claims, proof.jkt); // throws DPoPProofError on mismatch
+  return c.json({ ok: true });
+});
+
+// Boolean variant for explicit branching:
+if (!verifyJktBinding(claims, proof.jkt)) {
+  return c.text("binding failed", 401);
+}
+```
+
 ## Errors
 
 All errors follow [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9457) and include the [RFC 9449 §7.1](https://www.rfc-editor.org/rfc/rfc9449#section-7.1) `WWW-Authenticate: DPoP error="..."` header.
@@ -216,7 +235,7 @@ app.get("/api/me", (c) => {
 
 ## What this middleware does NOT do
 
-- It does **not** introspect or validate the access token. Use a separate middleware (e.g., your bearer/JWT verifier) to validate the access token, then compare the access token's `cnf.jkt` claim against `c.get("dpop").jkt` to enforce DPoP binding.
+- It does **not** introspect or validate the access token. Use a separate middleware (e.g., your bearer/JWT verifier) to validate the access token, then call `assertJktBinding(claims, c.get("dpop")!.jkt)` to enforce DPoP binding.
 - It does **not** verify multi-segment proxies. Use `getRequestUrl` to provide the canonical external URL when behind a reverse proxy.
 
 ## Documentation

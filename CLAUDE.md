@@ -20,7 +20,8 @@ DPoP (Demonstrating Proof-of-Possession, [RFC 9449](https://www.rfc-editor.org/r
 - `src/verify.ts` — Pure proof verification: `parseProof`, `verifyProofSignature`, `verifyProofClaims` (with `htuComparison` + `allowFutureIat`), `computeAth`, `normalizeHtu`
 - `src/jwk.ts` — JWK validation, RFC 7638 thumbprint, WebCrypto algorithm mapping
 - `src/base64url.ts` — `base64urlEncode` / `base64urlDecode` (no-pad)
-- `src/errors.ts` — RFC 9457 Problem Details with `DPoPErrorCode` and RFC 9449 `WWW-Authenticate: DPoP error="..."` headers; `ProblemDetail` carries optional `wwwAuthExtras` and `additionalHeaders` so error constructors (e.g. `useNonce`) can attach `nonce` and `DPoP-Nonce`
+- `src/errors.ts` — RFC 9457 Problem Details with `DPoPErrorCode` and RFC 9449 `WWW-Authenticate: DPoP error="..."` headers; `ProblemDetail` carries optional `wwwAuthExtras` and `additionalHeaders` so error constructors (e.g. `useNonce`) can attach `nonce`, `algs`, `DPoP-Nonce`
+- `src/jkt-binding.ts` — `assertJktBinding` (throwing) and `verifyJktBinding` (boolean) helpers for comparing the proof thumbprint to the access token's `cnf.jkt`
 - `src/stores/types.ts` — `DPoPNonceStore` interface (`check`, `purge`) and `NonceProvider` interface (`issueNonce`, `isValid`)
 - `src/stores/memory.ts` — In-process replay cache with TTL sweep
 - `src/stores/memory-nonce-provider.ts` — In-process server nonce provider with rotation and previous-nonce grace
