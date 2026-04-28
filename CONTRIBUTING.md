@@ -44,6 +44,10 @@ Keep commit messages concise and descriptive. Use [Changesets](https://github.co
 pnpm changeset
 ```
 
+## Releases
+
+Releases are managed by [Changesets](https://github.com/changesets/changesets). Every change that should appear in the changelog requires a changeset (`pnpm changeset`) committed alongside the code; merging the resulting "Version Packages" PR on `main` triggers the [release workflow](./.github/workflows/release.yml), which publishes to npm. Each published tarball is signed with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) (Sigstore) — the workflow runs on GitHub-hosted runners with `id-token: write` and `publishConfig.provenance` is enabled in `package.json`. Verify a published release with `npm audit signatures hono-dpop` or via the Sigstore badge on the package's [npm page](https://www.npmjs.com/package/hono-dpop).
+
 ## Reporting Issues
 
 Use [GitHub Issues](https://github.com/paveg/hono-dpop/issues). For security vulnerabilities, see [SECURITY.md](./SECURITY.md).
