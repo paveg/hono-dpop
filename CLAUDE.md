@@ -25,6 +25,20 @@ DPoP (Demonstrating Proof-of-Possession, [RFC 9449](https://www.rfc-editor.org/r
 - `src/stores/types.ts` — `DPoPNonceStore` interface (`check`, `purge`) and `NonceProvider` interface (`issueNonce`, `isValid`)
 - `src/stores/memory.ts` — In-process replay cache with TTL sweep
 - `src/stores/memory-nonce-provider.ts` — In-process server nonce provider with rotation and previous-nonce grace
+- `src/stores/redis.ts` — Redis-backed `SET NX EX` insert-if-absent. BYO client (ioredis / node-redis / @upstash/redis) via `RedisClientLike`. Native EX expiration → `purge()` is a no-op.
+- `src/stores/cloudflare-kv.ts` — Workers KV-backed store. Eventually consistent across POPs; RFC 9449 §11.1 tolerates best-effort enforcement. Optional `raceWindowMs` enables read-back race detection.
+- `src/stores/cloudflare-d1.ts` — D1-backed `INSERT OR IGNORE` on a `jti` PRIMARY KEY. Strong consistency from the SQLite primary. `tableName` is regex-validated to prevent injection. `purge()` deletes rows past `expires_at`.
+- `src/stores/durable-objects.ts` — DO storage-backed store. Per-object single-writer guarantee makes read-then-write atomic. Lazy expiration on read; `purge()` walks `keyPrefix` for cleanup.
+
+### Store comparison
+
+| Store | Consistency | Atomic insert-if-absent | TTL | Best for |
+|-------|-------------|-------------------------|-----|----------|
+| memory          | strong (per process) | yes (single thread) | manual sweep | dev, single-instance |
+| redis           | strong               | `SET NX EX`         | native EX     | multi-instance servers |
+| cloudflare-kv   | eventual             | best-effort         | native        | Workers tolerating rare replays |
+| cloudflare-d1   | strong               | `INSERT OR IGNORE`  | manual purge  | Workers needing strict atomicity |
+| durable-objects | strong               | single writer       | manual purge  | Workers needing per-tenant isolation |
 - `src/types.ts` — `DPoPOptions` (with `nonceProvider`, `maxProofSize`, `maxAccessTokenSize`, `clock`, `htuComparison`, `allowFutureIat`), `DPoPProof`, `DPoPEnv`, `DPoPVerifiedProof`
 
 ### Algorithms

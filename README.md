@@ -140,6 +140,18 @@ When [hono-problem-details](https://github.com/paveg/hono-problem-details) is in
 
 ## Stores
 
+The replay-cache `nonceStore` enforces RFC 9449 §11.1 — each `jti` is accepted at most once within its freshness window. Pick the backend that matches your runtime and consistency needs.
+
+### Choosing a Store
+
+| Store | Consistency | Durability | Atomic insert-if-absent | Native TTL | Setup | Best for |
+|-------|-------------|------------|-------------------------|------------|-------|----------|
+| `memory`            | strong (per process) | none (in-RAM) | yes (JS single thread) | manual sweep   | none                    | dev, tests, single-instance |
+| `redis`             | strong               | yes           | yes (`SET NX EX`)      | yes (`EX`)     | provision Redis client  | multi-instance servers, Workers (Upstash) |
+| `cloudflare-kv`     | eventual             | yes           | best-effort            | yes            | bind a KV namespace     | Workers when DO/D1 are overkill; tolerates rare replays |
+| `cloudflare-d1`     | strong (single primary) | yes        | yes (`INSERT OR IGNORE`) | manual `purge()` | bind a D1 database    | Workers wanting strict atomicity without a DO |
+| `durable-objects`   | strong (single writer) | yes         | yes (single-writer)    | manual `purge()` | DO class storage       | Workers needing per-tenant isolation + strict consistency |
+
 ### Memory Store
 
 Built-in, suitable for single-instance deployments and development.
@@ -151,6 +163,55 @@ const nonceStore = memoryNonceStore({
   ttl: 5 * 60_000, // milliseconds (default: 5 minutes)
   maxSize: 10_000, // optional FIFO bound
 });
+```
+
+### Redis Store
+
+Bring your own client (ioredis, node-redis, or @upstash/redis). Uses `SET key 1 NX EX <ttl>` for an atomic insert-if-absent in a single round-trip.
+
+```ts
+import Redis from "ioredis";
+import { redisStore } from "hono-dpop/stores/redis";
+
+const nonceStore = redisStore({
+  client: new Redis(process.env.REDIS_URL!),
+  ttl: 300,           // seconds, default 300
+  keyPrefix: "dpop:jti:",
+});
+```
+
+### Cloudflare KV Store
+
+Works on Workers. KV is eventually consistent across edge POPs, so two requests can rarely both observe a jti as absent and both succeed — RFC 9449 explicitly tolerates best-effort enforcement here.
+
+```ts
+import { kvStore } from "hono-dpop/stores/cloudflare-kv";
+
+// inside a Workers fetch handler with a KV binding `NONCE_KV`
+const nonceStore = kvStore({ namespace: env.NONCE_KV });
+```
+
+### Cloudflare D1 Store
+
+SQLite-backed strong consistency on Workers. Auto-creates the table on first use; call `purge()` from a scheduled handler to reclaim expired rows.
+
+```ts
+import { d1Store } from "hono-dpop/stores/cloudflare-d1";
+
+// inside a Workers fetch handler with a D1 binding `DB`
+const nonceStore = d1Store({ database: env.DB });
+// optional: scheduled() { await nonceStore.purge(); }
+```
+
+### Durable Objects Store
+
+Per-object single-writer guarantee → atomic without explicit locks. Ideal for per-tenant or per-key isolation.
+
+```ts
+import { durableObjectStore } from "hono-dpop/stores/durable-objects";
+
+// inside a Durable Object class
+const nonceStore = durableObjectStore({ storage: this.ctx.storage });
 ```
 
 ### Custom Store

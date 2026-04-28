@@ -25,5 +25,15 @@ export type { MemoryNonceStore, MemoryNonceStoreOptions } from "./stores/memory.
 export { memoryNonceProvider } from "./stores/memory-nonce-provider.js";
 export type { MemoryNonceProviderOptions } from "./stores/memory-nonce-provider.js";
 export type { RedisClientLike, RedisStoreOptions } from "./stores/redis.js";
+export type { KVNamespaceLike, KVStoreOptions } from "./stores/cloudflare-kv.js";
+export type {
+	D1DatabaseLike,
+	D1PreparedStatementLike,
+	D1StoreOptions,
+} from "./stores/cloudflare-d1.js";
+export type {
+	DurableObjectStorageLike,
+	DurableObjectStoreOptions,
+} from "./stores/durable-objects.js";
 export { assertJktBinding, verifyJktBinding } from "./jkt-binding.js";
 export type { AccessTokenClaimsWithCnf } from "./jkt-binding.js";

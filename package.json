@@ -36,13 +36,46 @@
 				"types": "./dist/stores/redis.d.cts",
 				"default": "./dist/stores/redis.cjs"
 			}
+		},
+		"./stores/cloudflare-kv": {
+			"import": {
+				"types": "./dist/stores/cloudflare-kv.d.ts",
+				"default": "./dist/stores/cloudflare-kv.js"
+			},
+			"require": {
+				"types": "./dist/stores/cloudflare-kv.d.cts",
+				"default": "./dist/stores/cloudflare-kv.cjs"
+			}
+		},
+		"./stores/cloudflare-d1": {
+			"import": {
+				"types": "./dist/stores/cloudflare-d1.d.ts",
+				"default": "./dist/stores/cloudflare-d1.js"
+			},
+			"require": {
+				"types": "./dist/stores/cloudflare-d1.d.cts",
+				"default": "./dist/stores/cloudflare-d1.cjs"
+			}
+		},
+		"./stores/durable-objects": {
+			"import": {
+				"types": "./dist/stores/durable-objects.d.ts",
+				"default": "./dist/stores/durable-objects.js"
+			},
+			"require": {
+				"types": "./dist/stores/durable-objects.d.cts",
+				"default": "./dist/stores/durable-objects.cjs"
+			}
 		}
 	},
 	"sideEffects": false,
 	"typesVersions": {
 		"*": {
 			"stores/memory": ["./dist/stores/memory.d.ts"],
-			"stores/redis": ["./dist/stores/redis.d.ts"]
+			"stores/redis": ["./dist/stores/redis.d.ts"],
+			"stores/cloudflare-kv": ["./dist/stores/cloudflare-kv.d.ts"],
+			"stores/cloudflare-d1": ["./dist/stores/cloudflare-d1.d.ts"],
+			"stores/durable-objects": ["./dist/stores/durable-objects.d.ts"]
 		}
 	},
 	"files": ["dist"],
