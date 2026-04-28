@@ -100,6 +100,8 @@ export function parseProof(jwt: string, allowed: ReadonlySet<JwsAlgorithm>): Par
 	};
 }
 
+export type HtuComparison = "strict" | "trailing-slash-insensitive";
+
 export interface ClaimVerifyOptions {
 	htm: string;
 	htu: string;
@@ -107,6 +109,10 @@ export interface ClaimVerifyOptions {
 	now: number;
 	/** Allowed clock skew on iat in seconds. */
 	iatTolerance: number;
+	/** htu comparison policy (default: "strict"). */
+	htuComparison?: HtuComparison;
+	/** Allow proofs with iat in the future (default: false). */
+	allowFutureIat?: boolean;
 }
 
 /**
@@ -120,13 +126,16 @@ export function verifyProofClaims(parsed: ParsedProof, opts: ClaimVerifyOptions)
 			),
 		);
 	}
-	const expectedHtu = normalizeHtu(opts.htu);
-	const actualHtu = normalizeHtu(parsed.payload.htu);
+	const policy = opts.htuComparison ?? "strict";
+	const expectedHtu = normalizeHtu(opts.htu, policy);
+	const actualHtu = normalizeHtu(parsed.payload.htu, policy);
 	if (expectedHtu !== actualHtu) {
 		throw new DPoPProofError(DPoPErrors.invalidProof("htu does not match request URL"));
 	}
-	const skew = Math.abs(opts.now - parsed.payload.iat);
-	if (skew > opts.iatTolerance) {
+	const delta = opts.now - parsed.payload.iat;
+	const tooOld = delta > opts.iatTolerance;
+	const tooNew = !opts.allowFutureIat && delta < -opts.iatTolerance;
+	if (tooOld || tooNew) {
 		throw new DPoPProofError(
 			DPoPErrors.invalidProof(`iat is outside the ${opts.iatTolerance}s window`),
 		);
@@ -136,8 +145,11 @@ export function verifyProofClaims(parsed: ParsedProof, opts: ClaimVerifyOptions)
 /**
  * Normalize a URL for htu comparison: strip query and fragment.
  * RFC 9449 §4.3 step 11: "ignoring any query and fragment parts".
+ *
+ * When `policy` is `"trailing-slash-insensitive"`, a trailing `/` is stripped
+ * from non-root paths so `https://x/api` and `https://x/api/` compare equal.
  */
-export function normalizeHtu(input: string): string {
+export function normalizeHtu(input: string, policy: HtuComparison = "strict"): string {
 	let url: URL;
 	try {
 		url = new URL(input);
@@ -146,7 +158,14 @@ export function normalizeHtu(input: string): string {
 	}
 	url.hash = "";
 	url.search = "";
-	return url.toString();
+	let s = url.toString();
+	if (policy === "trailing-slash-insensitive") {
+		// Only strip trailing slash from non-root paths. URL.toString() always
+		// emits at least "scheme://host/", so the shortest possible form ends
+		// in exactly one "/" — leave that alone, strip any deeper trailing one.
+		if (url.pathname !== "/" && s.endsWith("/")) s = s.slice(0, -1);
+	}
+	return s;
 }
 
 export async function verifyProofSignature(parsed: ParsedProof): Promise<void> {

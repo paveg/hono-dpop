@@ -23,10 +23,14 @@ import {
 
 const DEFAULT_IAT_TOLERANCE = 60;
 const DEFAULT_JTI_TTL_MS = 5 * 60_000;
+const DEFAULT_MAX_PROOF_SIZE = 8192;
+const DEFAULT_MAX_ACCESS_TOKEN_SIZE = 4096;
 const DPOP_HEADER = "DPoP";
 const DPOP_NONCE_HEADER = "DPoP-Nonce";
 const AUTHORIZATION_HEADER = "Authorization";
 const DPOP_AUTH_PREFIX = "DPoP ";
+
+const sizingEncoder = new TextEncoder();
 
 export function dpop(options: DPoPOptions) {
 	const {
@@ -39,16 +43,28 @@ export function dpop(options: DPoPOptions) {
 		requireAccessToken = false,
 		onError,
 		nonceProvider,
+		maxProofSize = DEFAULT_MAX_PROOF_SIZE,
+		maxAccessTokenSize = DEFAULT_MAX_ACCESS_TOKEN_SIZE,
+		clock = Date.now,
+		htuComparison = "strict",
+		allowFutureIat = false,
 	} = options;
 
 	const allowed = new Set<JwsAlgorithm>(algorithms);
+	const algsHint = algorithms.join(" ");
 
 	return createMiddleware<DPoPEnv>(async (c, next) => {
-		const errorResponse = (problem: ProblemDetail) => respondWithProblem(problem, c, onError);
+		const errorResponse = (problem: ProblemDetail) =>
+			respondWithProblem(problem, c, onError, algsHint);
 
 		const proofHeader = c.req.header(DPOP_HEADER);
 		if (!proofHeader) {
 			return errorResponse(DPoPErrors.invalidProof("DPoP header is missing"));
+		}
+
+		// Size shield: bound the input before any decode/parse work.
+		if (sizingEncoder.encode(proofHeader).length > maxProofSize) {
+			return errorResponse(DPoPErrors.invalidProof(`DPoP header exceeds ${maxProofSize} bytes`));
 		}
 
 		// RFC 9449 §4.3: exactly one DPoP header. The Headers API joins multiple
@@ -67,8 +83,10 @@ export function dpop(options: DPoPOptions) {
 			verifyProofClaims(parsed, {
 				htm: c.req.method,
 				htu: requestUrl,
-				now: Math.floor(Date.now() / 1000),
+				now: Math.floor(clock() / 1000),
 				iatTolerance,
+				htuComparison,
+				allowFutureIat,
 			});
 
 			await verifyProofSignature(parsed);
@@ -94,6 +112,11 @@ export function dpop(options: DPoPOptions) {
 			return errorResponse(DPoPErrors.missingAccessToken());
 		}
 		if (accessToken !== undefined) {
+			if (sizingEncoder.encode(accessToken).length > maxAccessTokenSize) {
+				return errorResponse(
+					DPoPErrors.invalidProof(`access token exceeds ${maxAccessTokenSize} bytes`),
+				);
+			}
 			if (typeof parsed.payload.ath !== "string") {
 				return errorResponse(
 					DPoPErrors.invalidProof("ath claim is required when an access token is presented"),
@@ -118,7 +141,7 @@ export function dpop(options: DPoPOptions) {
 			jti: parsed.payload.jti,
 			jwk: parsed.header.jwk,
 			htm: parsed.payload.htm,
-			htu: normalizeHtu(parsed.payload.htu),
+			htu: normalizeHtu(parsed.payload.htu, htuComparison),
 			iat: parsed.payload.iat,
 			ath: parsed.payload.ath,
 			raw: parsed.raw,
@@ -156,30 +179,37 @@ async function resolveAccessToken(
 async function respondWithProblem(
 	problem: ProblemDetail,
 	c: Context,
-	onError?: DPoPOptions["onError"],
+	onError: DPoPOptions["onError"] | undefined,
+	algsHint: string,
 ): Promise<Response> {
-	if (onError) return onError(problem, c);
+	// Surface supported algs on every 401 — RFC 9449 §7.1 lets clients
+	// discover the server's algorithm preferences without trial-and-error.
+	const enriched: ProblemDetail = {
+		...problem,
+		wwwAuthExtras: { ...problem.wwwAuthExtras, algs: algsHint },
+	};
+	if (onError) return onError(enriched, c);
 	const pd = await getHonoProblemDetails();
 	if (pd) {
 		const response = pd
 			.problemDetails({
-				type: problem.type,
-				title: problem.title,
-				status: problem.status,
-				detail: problem.detail,
-				extensions: { code: problem.code },
+				type: enriched.type,
+				title: enriched.title,
+				status: enriched.status,
+				detail: enriched.detail,
+				extensions: { code: enriched.code },
 			})
 			.getResponse();
 		response.headers.set(
 			"WWW-Authenticate",
-			wwwAuthenticateHeader(problem.wwwAuthError, problem.wwwAuthExtras),
+			wwwAuthenticateHeader(enriched.wwwAuthError, enriched.wwwAuthExtras),
 		);
-		if (problem.additionalHeaders) {
-			for (const [k, v] of Object.entries(problem.additionalHeaders)) {
+		if (enriched.additionalHeaders) {
+			for (const [k, v] of Object.entries(enriched.additionalHeaders)) {
 				response.headers.set(k, v);
 			}
 		}
 		return response;
 	}
-	return problemResponse(problem);
+	return problemResponse(enriched);
 }

@@ -273,6 +273,102 @@ describe("normalizeHtu", () => {
 	it("rejects malformed URL", () => {
 		expect(() => normalizeHtu("not a url")).toThrow(DPoPProofError);
 	});
+
+	it("strict policy preserves trailing slash on non-root paths", () => {
+		expect(normalizeHtu("https://api.example.com/x/")).toBe("https://api.example.com/x/");
+		expect(normalizeHtu("https://api.example.com/x")).toBe("https://api.example.com/x");
+	});
+
+	it("trailing-slash-insensitive policy strips trailing slash from non-root paths", () => {
+		expect(normalizeHtu("https://api.example.com/x/", "trailing-slash-insensitive")).toBe(
+			"https://api.example.com/x",
+		);
+		expect(normalizeHtu("https://api.example.com/x", "trailing-slash-insensitive")).toBe(
+			"https://api.example.com/x",
+		);
+	});
+
+	it("trailing-slash-insensitive preserves the root slash", () => {
+		expect(normalizeHtu("https://api.example.com", "trailing-slash-insensitive")).toBe(
+			"https://api.example.com/",
+		);
+		expect(normalizeHtu("https://api.example.com/", "trailing-slash-insensitive")).toBe(
+			"https://api.example.com/",
+		);
+	});
+});
+
+describe("verifyProofClaims — iat windows", () => {
+	it("rejects iat in the future by default (symmetric window)", async () => {
+		const future = nowSeconds() + 1000;
+		const { jwt } = await makeValidProof({ now: future });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: nowSeconds(),
+				iatTolerance: 60,
+			}),
+		).toThrow(/iat/);
+	});
+
+	it("allowFutureIat: accepts arbitrarily future iat", async () => {
+		const future = nowSeconds() + 100_000;
+		const { jwt } = await makeValidProof({ now: future });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: nowSeconds(),
+				iatTolerance: 60,
+				allowFutureIat: true,
+			}),
+		).not.toThrow();
+	});
+
+	it("allowFutureIat: still rejects iat too old", async () => {
+		const past = nowSeconds() - 1000;
+		const { jwt } = await makeValidProof({ now: past });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: nowSeconds(),
+				iatTolerance: 60,
+				allowFutureIat: true,
+			}),
+		).toThrow(/iat/);
+	});
+
+	it("htuComparison trailing-slash-insensitive: matches across trailing slash", async () => {
+		const { jwt } = await makeValidProof({ htu: "https://api.example.com/x" });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: "https://api.example.com/x/",
+				now: nowSeconds(),
+				iatTolerance: 60,
+				htuComparison: "trailing-slash-insensitive",
+			}),
+		).not.toThrow();
+	});
+
+	it("htuComparison strict (default): rejects across trailing slash", async () => {
+		const { jwt } = await makeValidProof({ htu: "https://api.example.com/x" });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: "https://api.example.com/x/",
+				now: nowSeconds(),
+				iatTolerance: 60,
+			}),
+		).toThrow(/htu/);
+	});
 });
 
 describe("verifyProofSignature", () => {

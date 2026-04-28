@@ -84,6 +84,22 @@ dpop({
   // and a fresh nonce in the `DPoP-Nonce` response header. Successful
   // responses also echo the current nonce.
   nonceProvider: memoryNonceProvider({ rotateAfter: 5 * 60_000 }),
+
+  // DoS shield — reject inputs above these sizes before any decode work.
+  maxProofSize: 8192,        // bytes (default: 8192)
+  maxAccessTokenSize: 4096,  // bytes (default: 4096)
+
+  // Inject a clock for tests / clock-skew compensation. Returns ms epoch.
+  clock: () => Date.now(),
+
+  // htu comparison policy. "strict" (default) requires exact equality after
+  // URL normalization. "trailing-slash-insensitive" strips a trailing `/`
+  // from non-root paths before comparison.
+  htuComparison: "strict",
+
+  // Allow proofs whose `iat` is in the future (default: false). When true,
+  // only past staleness is rejected: `iat < now - iatTolerance`.
+  allowFutureIat: false,
 });
 ```
 
@@ -93,11 +109,13 @@ All errors follow [RFC 9457 Problem Details](https://www.rfc-editor.org/rfc/rfc9
 
 | Status | Code | `error=` | When |
 |--------|------|----------|------|
-| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk), multiple `DPoP` headers |
+| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk), oversized proof or token, multiple `DPoP` headers |
 | 401 | `MISSING_ACCESS_TOKEN` | `invalid_token` | `requireAccessToken: true` and `Authorization: DPoP` missing |
 | 401 | `ATH_MISMATCH` | `invalid_token` | `ath` claim does not match SHA-256 of access token |
 | 401 | `JTI_REPLAY` | `invalid_dpop_proof` | `jti` already used within `jtiTtl` window |
 | 401 | `USE_NONCE` | `use_dpop_nonce` | `nonceProvider` is set and proof has no current `nonce` claim. Response carries a fresh `DPoP-Nonce` header and `nonce="..."` parameter on `WWW-Authenticate`. |
+
+Every 401 also carries an `algs="<space-separated>"` parameter on `WWW-Authenticate` so clients can discover supported algorithms without trial-and-error (RFC 9449 §7.1).
 
 When [hono-problem-details](https://github.com/paveg/hono-problem-details) is installed, error responses are generated using its `problemDetails().getResponse()`. Otherwise, a built-in fallback is used. No configuration needed — detection is automatic.
 

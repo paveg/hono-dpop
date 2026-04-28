@@ -51,4 +51,21 @@ export interface DPoPOptions {
 	 * current nonce.
 	 */
 	nonceProvider?: NonceProvider;
+	/** Maximum byte length of the `DPoP` header (default: 8192). */
+	maxProofSize?: number;
+	/** Maximum byte length of the access token (default: 4096). */
+	maxAccessTokenSize?: number;
+	/** Override clock — function returning milliseconds epoch. Default: `Date.now`. */
+	clock?: () => number;
+	/**
+	 * `htu` comparison policy. `"strict"` (default) requires byte-equality after
+	 * URL normalization. `"trailing-slash-insensitive"` strips trailing `/` from
+	 * paths (except root) before comparison.
+	 */
+	htuComparison?: "strict" | "trailing-slash-insensitive";
+	/**
+	 * Allow proofs whose `iat` is in the future. Default: `false` (symmetric window).
+	 * When true, only past staleness is rejected: `iat < now - iatTolerance`.
+	 */
+	allowFutureIat?: boolean;
 }

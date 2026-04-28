@@ -259,6 +259,90 @@ describe("dpop middleware", () => {
 		expect((await res.json()).detail).toMatch(/multiple DPoP headers/);
 	});
 
+	it("rejects DPoP header exceeding maxProofSize", async () => {
+		const { app } = createApp({ maxProofSize: 100 });
+		const { jwt } = await makeProof();
+		// Real proof is well over 100 bytes
+		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+		expect(res.status).toBe(401);
+		expect((await res.json()).detail).toMatch(/exceeds 100 bytes/);
+	});
+
+	it("rejects access token exceeding maxAccessTokenSize", async () => {
+		const { app } = createApp({ maxAccessTokenSize: 5 });
+		const token = "way-too-long-token";
+		const ath = await computeAth(token);
+		const { jwt } = await makeProof({ ath });
+		const res = await app.request("https://localhost/api/me", {
+			headers: { DPoP: jwt, Authorization: `DPoP ${token}` },
+		});
+		expect(res.status).toBe(401);
+		expect((await res.json()).detail).toMatch(/access token exceeds/);
+	});
+
+	it("clock option overrides Date.now for iat freshness", async () => {
+		// Fixed-time clock 1000 seconds in the past
+		const fixedSeconds = nowSeconds() - 1000;
+		const fixedMs = fixedSeconds * 1000;
+		const { app } = createApp({ clock: () => fixedMs, iatTolerance: 5 });
+		const { jwt } = await makeProof({ iat: fixedSeconds });
+		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+		expect(res.status).toBe(200);
+	});
+
+	it("htuComparison trailing-slash-insensitive: matches across trailing slash", async () => {
+		const app = new Hono();
+		app.use(
+			"/api/*",
+			dpop({
+				nonceStore: memoryNonceStore(),
+				htuComparison: "trailing-slash-insensitive",
+				// Force the request URL to have a trailing slash; the proof signs without.
+				getRequestUrl: () => "https://api.example.com/api/me/",
+			}),
+		);
+		app.get("/api/me", (c) => {
+			const proof = c.get("dpop");
+			return c.json({ htu: proof?.htu });
+		});
+		const { jwt } = await makeProof({ url: "https://api.example.com/api/me" });
+		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { htu: string };
+		// Stored htu reflects the policy: trailing slash stripped.
+		expect(body.htu).toBe("https://api.example.com/api/me");
+	});
+
+	it("htuComparison strict (default) rejects when only trailing slash differs", async () => {
+		const app = new Hono();
+		app.use(
+			"/api/*",
+			dpop({
+				nonceStore: memoryNonceStore(),
+				getRequestUrl: () => "https://api.example.com/api/me/",
+			}),
+		);
+		app.get("/api/me", (c) => c.text("ok"));
+		const { jwt } = await makeProof({ url: "https://api.example.com/api/me" });
+		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+		expect(res.status).toBe(401);
+		expect((await res.json()).detail).toMatch(/htu/);
+	});
+
+	it("allowFutureIat: accepts iat in the future", async () => {
+		const { app } = createApp({ allowFutureIat: true, iatTolerance: 60 });
+		const { jwt } = await makeProof({ iat: nowSeconds() + 1000 });
+		const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+		expect(res.status).toBe(200);
+	});
+
+	it("WWW-Authenticate includes algs hint on 401", async () => {
+		const { app } = createApp({ algorithms: ["ES256", "ES384"] });
+		const res = await app.request("https://localhost/api/me");
+		expect(res.status).toBe(401);
+		expect(res.headers.get("WWW-Authenticate")).toContain('algs="ES256 ES384"');
+	});
+
 	describe("nonceProvider (RFC 9449 §8)", () => {
 		const constantProvider = (nonce: string): NonceProvider => ({
 			issueNonce: () => nonce,
@@ -292,5 +376,18 @@ describe("dpop middleware", () => {
 			expect(res.status).toBe(200);
 			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-3");
 		});
+	});
+
+	it("onError receives the algs-enriched problem", async () => {
+		let captured: { wwwAuthExtras?: Record<string, string> } | undefined;
+		const { app } = createApp({
+			algorithms: ["ES256"],
+			onError: (problem) => {
+				captured = problem;
+				return new Response("nope", { status: 401 });
+			},
+		});
+		await app.request("https://localhost/api/me");
+		expect(captured?.wwwAuthExtras?.algs).toBe("ES256");
 	});
 });

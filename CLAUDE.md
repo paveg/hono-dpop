@@ -16,15 +16,15 @@ DPoP (Demonstrating Proof-of-Possession, [RFC 9449](https://www.rfc-editor.org/r
 
 ## Architecture
 
-- `src/middleware.ts` — `dpop()` factory: header presence + multi-header guard, parse, signature/claims verification, optional nonce challenge, optional access-token (`ath`) binding, jti replay check, success-path `DPoP-Nonce` echo
-- `src/verify.ts` — Pure proof verification: `parseProof`, `verifyProofSignature`, `verifyProofClaims`, `computeAth`
+- `src/middleware.ts` — `dpop()` factory: header presence + size + multi-header guard, parse, signature/claims verification, optional nonce challenge, optional access-token (`ath`) binding, jti replay check, success-path `DPoP-Nonce` echo
+- `src/verify.ts` — Pure proof verification: `parseProof`, `verifyProofSignature`, `verifyProofClaims` (with `htuComparison` + `allowFutureIat`), `computeAth`, `normalizeHtu`
 - `src/jwk.ts` — JWK validation, RFC 7638 thumbprint, WebCrypto algorithm mapping
 - `src/base64url.ts` — `base64urlEncode` / `base64urlDecode` (no-pad)
 - `src/errors.ts` — RFC 9457 Problem Details with `DPoPErrorCode` and RFC 9449 `WWW-Authenticate: DPoP error="..."` headers; `ProblemDetail` carries optional `wwwAuthExtras` and `additionalHeaders` so error constructors (e.g. `useNonce`) can attach `nonce` and `DPoP-Nonce`
 - `src/stores/types.ts` — `DPoPNonceStore` interface (`check`, `purge`) and `NonceProvider` interface (`issueNonce`, `isValid`)
 - `src/stores/memory.ts` — In-process replay cache with TTL sweep
 - `src/stores/memory-nonce-provider.ts` — In-process server nonce provider with rotation and previous-nonce grace
-- `src/types.ts` — `DPoPOptions` (with `nonceProvider`), `DPoPProof`, `DPoPEnv`, `DPoPVerifiedProof`
+- `src/types.ts` — `DPoPOptions` (with `nonceProvider`, `maxProofSize`, `maxAccessTokenSize`, `clock`, `htuComparison`, `allowFutureIat`), `DPoPProof`, `DPoPEnv`, `DPoPVerifiedProof`
 
 ### Algorithms
 
@@ -43,6 +43,11 @@ ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA. `none`, `H
 | `requireAccessToken` | `boolean` | Reject when `Authorization: DPoP` missing (default: `false`) |
 | `onError` | `(error: ProblemDetail, c: Context) => Response \| Promise<Response>` | Custom error response |
 | `nonceProvider` | `NonceProvider` | Server-issued nonce challenge (RFC 9449 §8). When set, missing/invalid `nonce` claims trigger `use_dpop_nonce` 401 with a fresh `DPoP-Nonce` header |
+| `maxProofSize` | `number` (bytes) | DoS shield: reject `DPoP` headers above this size before any decode (default: `8192`) |
+| `maxAccessTokenSize` | `number` (bytes) | Same shield for the access token (default: `4096`) |
+| `clock` | `() => number` (ms) | Inject a clock for tests/clock-skew compensation (default: `Date.now`) |
+| `htuComparison` | `"strict" \| "trailing-slash-insensitive"` | htu equality policy (default: `"strict"`) |
+| `allowFutureIat` | `boolean` | When `true`, only past staleness is rejected (default: `false`) |
 
 ## Conventions
 
