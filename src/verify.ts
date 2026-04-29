@@ -25,6 +25,14 @@ export interface ParsedProof {
 
 const encoder = new TextEncoder();
 
+// Upper bound for iat (seconds). 1e10 ≈ year 2286 — far past any realistic
+// proof lifetime, but small enough that `iat * 1000` (used downstream as a
+// jti expiry timestamp in milliseconds) stays well below Number.MAX_SAFE_INTEGER.
+// Without this cap, a forged `iat` near Number.MAX_SAFE_INTEGER would lose
+// precision when multiplied, producing a near-Infinity expiry that makes the
+// jti effectively immortal in the replay store.
+const MAX_IAT = 1e10;
+
 function fail(detail: string): never {
 	throw new DPoPProofError(DPoPErrors.invalidProof(detail));
 }
@@ -75,7 +83,9 @@ export function parseProof(jwt: string, allowed: ReadonlySet<JwsAlgorithm>): Par
 	if (typeof p.jti !== "string" || p.jti.length === 0) fail("jti is missing");
 	if (typeof p.htm !== "string") fail("htm must be a string");
 	if (typeof p.htu !== "string") fail("htu must be a string");
-	if (typeof p.iat !== "number" || !Number.isFinite(p.iat)) fail("iat must be a finite number");
+	if (typeof p.iat !== "number" || !Number.isInteger(p.iat) || p.iat < 0 || p.iat > MAX_IAT) {
+		fail("iat must be a non-negative integer within bounds");
+	}
 	if (p.ath !== undefined && typeof p.ath !== "string") fail("ath must be a string");
 	if (p.nonce !== undefined && typeof p.nonce !== "string") fail("nonce must be a string");
 
@@ -189,14 +199,31 @@ export async function computeAth(accessToken: string): Promise<string> {
 	return base64urlEncode(new Uint8Array(digest));
 }
 
-/** Constant-time string comparison to avoid timing leaks on ath comparisons. */
+/**
+ * Constant-time string comparison to avoid timing leaks on ath comparisons.
+ *
+ * Length-tolerant: rather than early-returning on `a.length !== b.length` (which
+ * leaks length information via timing), we mix the length difference into the
+ * accumulated diff and walk the longer input to its end. Iteration count is
+ * proportional to `max(|a|, |b|)`, not `min`, so an attacker cannot infer the
+ * shorter side's length by measuring how long the comparison takes. Observable
+ * behavior (true/false return) is unchanged.
+ */
 export function timingSafeEqual(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
 	const aBytes = encoder.encode(a);
 	const bBytes = encoder.encode(b);
-	let diff = 0;
-	for (let i = 0; i < aBytes.length; i++) {
+	let diff = aBytes.length ^ bBytes.length;
+	const minLen = Math.min(aBytes.length, bBytes.length);
+	for (let i = 0; i < minLen; i++) {
 		diff |= aBytes[i] ^ bBytes[i];
+	}
+	// Touch the longer side's remaining bytes so iteration time is bounded by
+	// max(|a|, |b|). The OR with the byte value also guarantees diff stays
+	// nonzero when the longer side has any non-NUL trailing byte (the length
+	// XOR above already ensures nonzero diff for unequal lengths regardless).
+	const longer = aBytes.length > bBytes.length ? aBytes : bBytes;
+	for (let i = minLen; i < longer.length; i++) {
+		diff |= longer[i];
 	}
 	return diff === 0;
 }

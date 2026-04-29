@@ -168,6 +168,36 @@ describe("parseProof — payload failures", () => {
 		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
 	});
 
+	it("rejects iat above MAX_IAT", () => {
+		// 1e15 is far past the safe upper bound; without a cap, iat * 1000 in
+		// downstream jti expiry math overflows Number.MAX_SAFE_INTEGER and the
+		// jti becomes effectively immortal.
+		const jwt = valid({ jti: "a", htm: "GET", htu: "u", iat: 1e15 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("rejects negative iat", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "u", iat: -1 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("rejects non-integer iat (e.g., 1234.5)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "u", iat: 1234.5 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("accepts iat=0 boundary", async () => {
+		// 0 is a non-negative integer; the freshness window check happens later
+		// in verifyProofClaims, not here in parseProof.
+		const { jwt } = await makeValidProof({ now: 0 });
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
+	it("accepts iat at MAX_IAT boundary", async () => {
+		const { jwt } = await makeValidProof({ now: 1e10 });
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
 	it("rejects wrong-typed ath/nonce", () => {
 		expect(() =>
 			parseProof(valid({ jti: "a", htm: "GET", htu: "u", iat: 0, ath: 1 }), ALL),
@@ -422,5 +452,18 @@ describe("timingSafeEqual", () => {
 
 	it("returns false for different lengths", () => {
 		expect(timingSafeEqual("abc", "ab")).toBe(false);
+	});
+
+	it("returns false for length mismatch (b longer)", () => {
+		expect(timingSafeEqual("abc", "abcd")).toBe(false);
+	});
+
+	it("returns false for length mismatch (a longer)", () => {
+		expect(timingSafeEqual("abcd", "abc")).toBe(false);
+	});
+
+	it("returns false for empty vs non-empty", () => {
+		expect(timingSafeEqual("", "x")).toBe(false);
+		expect(timingSafeEqual("x", "")).toBe(false);
 	});
 });
