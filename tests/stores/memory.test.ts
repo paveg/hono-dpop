@@ -86,4 +86,88 @@ describe("memoryNonceStore", () => {
 		expect(await store.check("a", Date.now() + 60_000)).toBe(false);
 		expect(store.size).toBe(1);
 	});
+
+	describe("boundary cases", () => {
+		// Implementation uses `existingExp > now` for replay check, so an entry written
+		// with `expiresAt === now` is treated as already expired the moment it lands.
+		// First write succeeds (no prior entry); the immediate replay observes it expired
+		// and writes a fresh entry returning true.
+		it("expiresAt === clock() — first write true, replay also true (entry counts as expired)", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const now = Date.now();
+			expect(await store.check("a", now)).toBe(true);
+			expect(await store.check("a", now)).toBe(true);
+		});
+
+		it("expiresAt === clock() + 1 — replay within window returns false", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const exp = Date.now() + 1;
+			expect(await store.check("a", exp)).toBe(true);
+			expect(await store.check("a", exp)).toBe(false);
+		});
+
+		it("expiresAt = -1 is recorded but treated as already expired on replay", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			expect(await store.check("a", -1)).toBe(true);
+			expect(await store.check("a", -1)).toBe(true);
+		});
+
+		it("expiresAt = 0 is recorded but treated as already expired on replay", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			expect(await store.check("a", 0)).toBe(true);
+			expect(await store.check("a", 0)).toBe(true);
+		});
+
+		it("expiresAt = Number.MAX_SAFE_INTEGER blocks replay", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			expect(await store.check("a", Number.MAX_SAFE_INTEGER)).toBe(true);
+			expect(await store.check("a", Number.MAX_SAFE_INTEGER)).toBe(false);
+		});
+
+		it("accepts empty string jti", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			expect(await store.check("", Date.now() + 60_000)).toBe(true);
+			expect(await store.check("", Date.now() + 60_000)).toBe(false);
+		});
+
+		it("accepts very long jti (10000 chars)", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const longJti = "x".repeat(10_000);
+			expect(await store.check(longJti, Date.now() + 60_000)).toBe(true);
+			expect(await store.check(longJti, Date.now() + 60_000)).toBe(false);
+		});
+
+		it("accepts jti containing newline and colon characters", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const jti = "abc\ndef:ghi";
+			expect(await store.check(jti, Date.now() + 60_000)).toBe(true);
+			expect(await store.check(jti, Date.now() + 60_000)).toBe(false);
+		});
+
+		it("re-checks the same jti after expiration with a new expiresAt", async () => {
+			const store = memoryNonceStore({ sweepInterval: 0 });
+			expect(await store.check("a", Date.now() + 1000)).toBe(true);
+			vi.advanceTimersByTime(1001);
+			expect(await store.check("a", Date.now() + 5000)).toBe(true);
+		});
+
+		it("maxSize=1 evicts the previous entry when a new one is added", async () => {
+			const store = memoryNonceStore({ maxSize: 1, sweepInterval: Number.POSITIVE_INFINITY });
+			const exp = Date.now() + 60_000;
+			expect(await store.check("a", exp)).toBe(true);
+			expect(await store.check("b", exp)).toBe(true);
+			expect(store.size).toBe(1);
+			// "a" was evicted by FIFO policy and may now be re-acquired
+			expect(await store.check("a", exp)).toBe(true);
+		});
+
+		it("maxSize=undefined retains 1000 entries without eviction", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const exp = Date.now() + 60_000;
+			for (let i = 0; i < 1000; i++) {
+				expect(await store.check(`jti-${i}`, exp)).toBe(true);
+			}
+			expect(store.size).toBe(1000);
+		});
+	});
 });

@@ -134,4 +134,105 @@ describe("redisStore", () => {
 		await store.check("a", Date.now() + 60_000);
 		expect(await store.purge()).toBe(0);
 	});
+
+	describe("boundary cases", () => {
+		it('check returns true when client.set resolves "OK"', async () => {
+			const client = { set: async () => "OK" as string | null };
+			const store = redisStore({ client });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(true);
+		});
+
+		it("check returns false when client.set resolves null (NX collision)", async () => {
+			const client = { set: async () => null as string | null };
+			const store = redisStore({ client });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(false);
+		});
+
+		it("check returns false when client.set resolves undefined", async () => {
+			const client = { set: async () => undefined as unknown as string | null };
+			const store = redisStore({ client });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(false);
+		});
+
+		it("propagates exceptions thrown by client.set", async () => {
+			const client = {
+				set: async () => {
+					throw new Error("redis down");
+				},
+			};
+			const store = redisStore({ client });
+			await expect(store.check("a", Date.now() + 60_000)).rejects.toThrow("redis down");
+		});
+
+		it("expiresAt = now + 1 → EX = 1 (Math.ceil(0.001))", async () => {
+			let captured: { NX?: boolean; EX?: number } | undefined;
+			const client = {
+				set: async (_k: string, _v: string, opts?: { NX?: boolean; EX?: number }) => {
+					captured = opts;
+					return "OK" as string | null;
+				},
+			};
+			const store = redisStore({ client });
+			await store.check("a", Date.now() + 1);
+			expect(captured?.EX).toBe(1);
+		});
+
+		it("expiresAt = now → returns false without issuing SET (remainingSeconds <= 0)", async () => {
+			let setCount = 0;
+			const client = {
+				set: async () => {
+					setCount++;
+					return "OK" as string | null;
+				},
+			};
+			const store = redisStore({ client });
+			expect(await store.check("a", Date.now())).toBe(false);
+			expect(setCount).toBe(0);
+		});
+
+		it("expiresAt = now - 1000 → returns false without issuing SET", async () => {
+			let setCount = 0;
+			const client = {
+				set: async () => {
+					setCount++;
+					return "OK" as string | null;
+				},
+			};
+			const store = redisStore({ client });
+			expect(await store.check("a", Date.now() - 1000)).toBe(false);
+			expect(setCount).toBe(0);
+		});
+
+		it('keyPrefix = "" leaves the key as bare jti', async () => {
+			let capturedKey: string | undefined;
+			const client = {
+				set: async (key: string) => {
+					capturedKey = key;
+					return "OK" as string | null;
+				},
+			};
+			const store = redisStore({ client, keyPrefix: "" });
+			await store.check("abc", Date.now() + 60_000);
+			expect(capturedKey).toBe("abc");
+		});
+
+		it('keyPrefix = "tenant:" + jti = "abc" → key = "tenant:abc"', async () => {
+			let capturedKey: string | undefined;
+			const client = {
+				set: async (key: string) => {
+					capturedKey = key;
+					return "OK" as string | null;
+				},
+			};
+			const store = redisStore({ client, keyPrefix: "tenant:" });
+			await store.check("abc", Date.now() + 60_000);
+			expect(capturedKey).toBe("tenant:abc");
+		});
+
+		it("purge() always returns 0 (no-op contract)", async () => {
+			const client = { set: async () => "OK" as string | null };
+			const store = redisStore({ client });
+			expect(await store.purge()).toBe(0);
+		});
+	});
 });

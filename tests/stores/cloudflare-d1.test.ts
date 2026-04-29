@@ -149,4 +149,86 @@ describe("d1Store", () => {
 		const store = d1Store({ database: db });
 		expect(await store.purge()).toBe(0);
 	});
+
+	describe("boundary cases", () => {
+		it('accepts tableName "my_table_v2"', () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: "my_table_v2" })).not.toThrow();
+		});
+
+		it("rejects tableName containing quote and semicolon (SQL injection attempt)", () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: '"; DROP TABLE x;--' })).toThrow(
+				/invalid table name/i,
+			);
+		});
+
+		it('rejects "1bad" (starts with digit)', () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: "1bad" })).toThrow(/invalid table name/i);
+		});
+
+		it('rejects "a-b" (hyphen not allowed)', () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: "a-b" })).toThrow(/invalid table name/i);
+		});
+
+		it('rejects "" (empty tableName)', () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: "" })).toThrow(/invalid table name/i);
+		});
+
+		it('rejects "valid name" (whitespace not allowed)', () => {
+			const db = createMockD1();
+			expect(() => d1Store({ database: db, tableName: "valid name" })).toThrow(
+				/invalid table name/i,
+			);
+		});
+
+		it("accepts a 100-character tableName (regex has no length limit)", () => {
+			const db = createMockD1();
+			const longName = "a".repeat(100);
+			expect(() => d1Store({ database: db, tableName: longName })).not.toThrow();
+		});
+
+		it("INSERT OR IGNORE with changes=1 returns true", async () => {
+			const db = createMockD1();
+			const store = d1Store({ database: db });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(true);
+		});
+
+		it("INSERT OR IGNORE with changes=0 returns false (replay)", async () => {
+			const db = createMockD1();
+			const store = d1Store({ database: db });
+			const exp = Date.now() + 60_000;
+			await store.check("a", exp);
+			expect(await store.check("a", exp)).toBe(false);
+		});
+
+		it("purge() deletes only rows where expires_at < now and returns the count", async () => {
+			const db = createMockD1();
+			const store = d1Store({ database: db });
+			await store.check("expired-a", Date.now() + 100);
+			await store.check("expired-b", Date.now() + 200);
+			await store.check("fresh", Date.now() + 60_000);
+			vi.advanceTimersByTime(300);
+			expect(await store.purge()).toBe(2);
+			expect(db.rows.has("fresh")).toBe(true);
+		});
+
+		// `INSERT OR IGNORE` collides on PRIMARY KEY regardless of expires_at, so an
+		// expired row blocks re-acquisition until purge() removes it. This is the
+		// documented design — operators must run purge() periodically.
+		it("expired row in table still blocks the same jti until purged", async () => {
+			const db = createMockD1();
+			const store = d1Store({ database: db });
+			await store.check("a", Date.now() + 100);
+			vi.advanceTimersByTime(1000);
+			// Same jti, fresh window — but PRIMARY KEY collision still rejects it
+			expect(await store.check("a", Date.now() + 60_000)).toBe(false);
+			// After purge() the slot is freed
+			await store.purge();
+			expect(await store.check("a", Date.now() + 60_000)).toBe(true);
+		});
+	});
 });

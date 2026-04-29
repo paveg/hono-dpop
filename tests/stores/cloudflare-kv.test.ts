@@ -124,4 +124,124 @@ describe("kvStore", () => {
 		await store.check("a", Date.now() + 60_000);
 		expect(await store.purge()).toBe(0);
 	});
+
+	describe("boundary cases", () => {
+		it("expiresAt = now + 5_000 → expirationTtl clamped up to 60", async () => {
+			const kv = createMockKV();
+			let captured: { expirationTtl?: number } | undefined;
+			kv.put = async (_k, _v, o) => {
+				captured = o;
+			};
+			const store = kvStore({ namespace: kv });
+			await store.check("a", Date.now() + 5_000);
+			expect(captured?.expirationTtl).toBe(60);
+		});
+
+		it("expiresAt = now + 60_000 → expirationTtl = 60 (exact floor)", async () => {
+			const kv = createMockKV();
+			let captured: { expirationTtl?: number } | undefined;
+			kv.put = async (_k, _v, o) => {
+				captured = o;
+			};
+			const store = kvStore({ namespace: kv });
+			await store.check("a", Date.now() + 60_000);
+			expect(captured?.expirationTtl).toBe(60);
+		});
+
+		it("expiresAt = now + 61_000 → expirationTtl = 61 (above floor)", async () => {
+			const kv = createMockKV();
+			let captured: { expirationTtl?: number } | undefined;
+			kv.put = async (_k, _v, o) => {
+				captured = o;
+			};
+			const store = kvStore({ namespace: kv });
+			await store.check("a", Date.now() + 61_000);
+			expect(captured?.expirationTtl).toBe(61);
+		});
+
+		it("expiresAt = now → returns false without put (remainingMs <= 0)", async () => {
+			const kv = createMockKV();
+			let putCount = 0;
+			kv.put = async () => {
+				putCount++;
+			};
+			const store = kvStore({ namespace: kv });
+			expect(await store.check("a", Date.now())).toBe(false);
+			expect(putCount).toBe(0);
+		});
+
+		it("expiresAt = now - 1 → returns false without put", async () => {
+			const kv = createMockKV();
+			let putCount = 0;
+			kv.put = async () => {
+				putCount++;
+			};
+			const store = kvStore({ namespace: kv });
+			expect(await store.check("a", Date.now() - 1)).toBe(false);
+			expect(putCount).toBe(0);
+		});
+
+		it("default raceWindowMs (0) skips read-back; first put wins", async () => {
+			const kv = createMockKV();
+			let getCount = 0;
+			const origGet = kv.get.bind(kv);
+			kv.get = async (k, o) => {
+				getCount++;
+				return origGet(k, o);
+			};
+			const store = kvStore({ namespace: kv });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(true);
+			// Only the pre-put get fires; no read-back
+			expect(getCount).toBe(1);
+		});
+
+		it("raceWindowMs > 0 with mismatched read-back returns false", async () => {
+			const kv = createMockKV();
+			const origPut = kv.put.bind(kv);
+			let putCount = 0;
+			kv.put = async (k, v, o) => {
+				await origPut(k, v, o);
+				putCount++;
+				if (putCount === 1) {
+					await origPut(k, "different-marker", o);
+				}
+			};
+			const store = kvStore({ namespace: kv, raceWindowMs: 5 });
+			const promise = store.check("a", Date.now() + 60_000);
+			await vi.advanceTimersByTimeAsync(5);
+			expect(await promise).toBe(false);
+		});
+
+		it("propagates exceptions thrown by KV.put", async () => {
+			const kv = createMockKV();
+			kv.put = async () => {
+				throw new Error("kv unavailable");
+			};
+			const store = kvStore({ namespace: kv });
+			await expect(store.check("a", Date.now() + 60_000)).rejects.toThrow("kv unavailable");
+		});
+
+		it("returns false when KV.get already returns an existing marker (replay)", async () => {
+			const kv = createMockKV();
+			kv.get = async () => "existing-marker";
+			let putCount = 0;
+			kv.put = async () => {
+				putCount++;
+			};
+			const store = kvStore({ namespace: kv });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(false);
+			expect(putCount).toBe(0);
+		});
+
+		it('keyPrefix = "" stores the key as bare jti', async () => {
+			const kv = createMockKV();
+			let capturedKey: string | undefined;
+			kv.put = async (k) => {
+				capturedKey = k;
+			};
+			const store = kvStore({ namespace: kv, keyPrefix: "" });
+			await store.check("abc", Date.now() + 60_000);
+			expect(capturedKey).toBe("abc");
+		});
+	});
 });

@@ -107,4 +107,84 @@ describe("durableObjectStore", () => {
 		expect(await store.purge()).toBe(1);
 		expect(storage.data.has("other:foo")).toBe(true);
 	});
+
+	describe("boundary cases", () => {
+		it("expiresAt = now + 1 → effectiveExpiresAt = expiresAt (no fallback)", async () => {
+			const storage = createMockStorage();
+			const store = durableObjectStore({ storage, defaultTtl: 999_999 });
+			const exp = Date.now() + 1;
+			expect(await store.check("a", exp)).toBe(true);
+			const stored = storage.data.get("dpop:jti:a") as { expiresAt: number };
+			expect(stored.expiresAt).toBe(exp);
+		});
+
+		// Implementation uses `expiresAt > now`, so equality falls through to defaultTtl.
+		it("expiresAt = now → fallback to defaultTtl (uses strict >)", async () => {
+			const storage = createMockStorage();
+			const store = durableObjectStore({ storage, defaultTtl: 10_000 });
+			const before = Date.now();
+			expect(await store.check("a", before)).toBe(true);
+			const stored = storage.data.get("dpop:jti:a") as { expiresAt: number };
+			expect(stored.expiresAt).toBe(before + 10_000);
+		});
+
+		it("expiresAt = now - 1 → fallback to defaultTtl", async () => {
+			const storage = createMockStorage();
+			const store = durableObjectStore({ storage, defaultTtl: 10_000 });
+			const before = Date.now();
+			expect(await store.check("a", before - 1)).toBe(true);
+			const stored = storage.data.get("dpop:jti:a") as { expiresAt: number };
+			expect(stored.expiresAt).toBe(before + 10_000);
+		});
+
+		it("expiresAt = -1 → fallback to defaultTtl", async () => {
+			const storage = createMockStorage();
+			const store = durableObjectStore({ storage, defaultTtl: 10_000 });
+			const before = Date.now();
+			expect(await store.check("a", -1)).toBe(true);
+			const stored = storage.data.get("dpop:jti:a") as { expiresAt: number };
+			expect(stored.expiresAt).toBe(before + 10_000);
+		});
+
+		// Lazy expiration: an existing entry whose expiresAt is in the past does not
+		// block a fresh check; the new put overwrites it in place.
+		it("existing expired entry is replaced — new check returns true", async () => {
+			const storage = createMockStorage();
+			const store = durableObjectStore({ storage });
+			await storage.put("dpop:jti:a", { expiresAt: Date.now() - 1_000 });
+			expect(await store.check("a", Date.now() + 60_000)).toBe(true);
+		});
+
+		// JS implicit coercion: `"123" > 100` → numeric compare → true. Document this
+		// behavior so silent type drift in storage payloads doesn't surprise callers.
+		it('coerces existing entry expiresAt of type string via JS ">" comparison', async () => {
+			const storage = createMockStorage();
+			const futureMs = String(Date.now() + 60_000);
+			await storage.put("dpop:jti:a", { expiresAt: futureMs as unknown as number });
+			const store = durableObjectStore({ storage });
+			// "<future-string>" > now → true (numeric coercion) → blocks as replay
+			expect(await store.check("a", Date.now() + 60_000)).toBe(false);
+		});
+
+		it("purge() with custom keyPrefix ignores entries outside that prefix", async () => {
+			const storage = createMockStorage();
+			await storage.put("other:bar", { expiresAt: Date.now() - 1 });
+			const store = durableObjectStore({ storage, keyPrefix: "tenant:" });
+			await store.check("a", Date.now() + 100);
+			vi.advanceTimersByTime(200);
+			expect(await store.purge()).toBe(1);
+			expect(storage.data.has("other:bar")).toBe(true);
+			expect(storage.data.has("tenant:a")).toBe(false);
+		});
+
+		it('purge() with keyPrefix="" walks every key in storage', async () => {
+			const storage = createMockStorage();
+			await storage.put("foo", { expiresAt: Date.now() - 1 });
+			await storage.put("bar", { expiresAt: Date.now() - 1 });
+			await storage.put("baz", { expiresAt: Date.now() + 60_000 });
+			const store = durableObjectStore({ storage, keyPrefix: "" });
+			expect(await store.purge()).toBe(2);
+			expect(storage.data.has("baz")).toBe(true);
+		});
+	});
 });
