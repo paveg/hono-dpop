@@ -9,7 +9,6 @@ import {
 	wwwAuthenticateHeader,
 } from "./errors.js";
 import { type JwsAlgorithm, SUPPORTED_ALGORITHMS, jwkThumbprint } from "./jwk.js";
-import type { NonceProvider } from "./stores/types.js";
 import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof } from "./types.js";
 import {
 	type ParsedProof,
@@ -28,7 +27,9 @@ const DEFAULT_MAX_ACCESS_TOKEN_SIZE = 4096;
 const DPOP_HEADER = "DPoP";
 const DPOP_NONCE_HEADER = "DPoP-Nonce";
 const AUTHORIZATION_HEADER = "Authorization";
-const DPOP_AUTH_PREFIX = "DPoP ";
+// RFC 7235 §2.1: scheme names are case-insensitive. We compare against the
+// lowercase form so `DPoP`, `dpop`, and `Dpop` all match.
+const DPOP_AUTH_SCHEME = "dpop";
 
 const sizingEncoder = new TextEncoder();
 
@@ -75,6 +76,21 @@ export function dpop(options: DPoPOptions) {
 			return errorResponse(DPoPErrors.invalidProof("multiple DPoP headers are not allowed"));
 		}
 
+		// Resolve and size-check the access token BEFORE expensive crypto work.
+		// An attacker with their own valid keypair could otherwise force the
+		// server to TextEncoder.encode + crypto.subtle.digest a multi-megabyte
+		// `Authorization: DPoP ...` value during ath verification before being
+		// rejected. Bounded DoS — fail fast on size first.
+		const accessToken = await resolveAccessToken(c, getAccessToken);
+		if (
+			accessToken !== undefined &&
+			sizingEncoder.encode(accessToken).length > maxAccessTokenSize
+		) {
+			return errorResponse(
+				DPoPErrors.invalidProof(`access token exceeds ${maxAccessTokenSize} bytes`),
+			);
+		}
+
 		let parsed: ParsedProof;
 		try {
 			parsed = parseProof(proofHeader, allowed);
@@ -95,28 +111,34 @@ export function dpop(options: DPoPOptions) {
 			throw err;
 		}
 
+		// Lazy + memoized issueNonce: shared between the use_dpop_nonce error
+		// path and the success-path echo so a request triggers at most one
+		// provider RPC. Matters for shared-store providers (Redis, KV) where
+		// each issueNonce() is a network round-trip.
+		let cachedNonce: string | undefined;
+		const issueNonceOnce = nonceProvider
+			? async () => {
+					if (cachedNonce === undefined) cachedNonce = await nonceProvider.issueNonce(c);
+					return cachedNonce;
+				}
+			: undefined;
+
 		// Nonce challenge (RFC 9449 §8). Run after sig verification so that we
 		// only mint nonces for cryptographically valid proofs — prevents nonce
 		// flooding from unauthenticated clients.
-		if (nonceProvider) {
+		if (nonceProvider && issueNonceOnce) {
 			const nonceClaim = parsed.payload.nonce;
 			const nonceOk =
 				typeof nonceClaim === "string" && (await nonceProvider.isValid(nonceClaim, c));
 			if (!nonceOk) {
-				return errorResponse(DPoPErrors.useNonce(await nonceProvider.issueNonce(c)));
+				return errorResponse(DPoPErrors.useNonce(await issueNonceOnce()));
 			}
 		}
 
-		const accessToken = await resolveAccessToken(c, getAccessToken);
 		if (requireAccessToken && !accessToken) {
 			return errorResponse(DPoPErrors.missingAccessToken());
 		}
 		if (accessToken !== undefined) {
-			if (sizingEncoder.encode(accessToken).length > maxAccessTokenSize) {
-				return errorResponse(
-					DPoPErrors.invalidProof(`access token exceeds ${maxAccessTokenSize} bytes`),
-				);
-			}
 			if (typeof parsed.payload.ath !== "string") {
 				return errorResponse(
 					DPoPErrors.invalidProof("ath claim is required when an access token is presented"),
@@ -151,15 +173,13 @@ export function dpop(options: DPoPOptions) {
 		await next();
 
 		// Echo the current nonce on success so clients learn it without an extra
-		// challenge round-trip (RFC 9449 §8 recommendation).
-		if (nonceProvider) {
-			await setSuccessNonce(c, nonceProvider);
+		// challenge round-trip (RFC 9449 §8 recommendation). Reuses the cached
+		// value if the use_dpop_nonce path already minted one (it didn't here,
+		// since we reached success — but the closure is still memoized).
+		if (issueNonceOnce) {
+			c.res.headers.set(DPOP_NONCE_HEADER, await issueNonceOnce());
 		}
 	});
-}
-
-async function setSuccessNonce(c: Context, provider: NonceProvider): Promise<void> {
-	c.res.headers.set(DPOP_NONCE_HEADER, await provider.issueNonce(c));
 }
 
 async function resolveAccessToken(
@@ -168,12 +188,16 @@ async function resolveAccessToken(
 ): Promise<string | undefined> {
 	if (override) return override(c);
 	const auth = c.req.header(AUTHORIZATION_HEADER);
-	if (!auth || !auth.startsWith(DPOP_AUTH_PREFIX)) return undefined;
-	// HTTP header value normalization strips trailing whitespace, so a bare "DPoP " never
-	// reaches the slice — the !startsWith check above already rejects it. The trim() handles
-	// the "DPoP   token" (extra interior whitespace) case. Empty strings further downstream
-	// are caught by `!accessToken` in the requireAccessToken check.
-	return auth.slice(DPOP_AUTH_PREFIX.length).trim();
+	if (!auth) return undefined;
+	// RFC 7235 §2.1: authentication scheme names are case-insensitive. Match on
+	// the lowercase scheme prefix but slice from the original to preserve the
+	// token bytes (the token after the scheme is opaque and case-sensitive).
+	const space = auth.indexOf(" ");
+	if (space < 0) return undefined;
+	if (auth.slice(0, space).toLowerCase() !== DPOP_AUTH_SCHEME) return undefined;
+	// trim() handles the "DPoP   token" (extra interior whitespace) case. Empty strings
+	// further downstream are caught by `!accessToken` in the requireAccessToken check.
+	return auth.slice(space + 1).trim();
 }
 
 async function respondWithProblem(

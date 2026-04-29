@@ -378,6 +378,123 @@ describe("dpop middleware", () => {
 		});
 	});
 
+	describe("Authorization scheme case-insensitivity (RFC 7235)", () => {
+		it("accepts 'dpop <token>' (lowercase scheme)", async () => {
+			const { app } = createApp();
+			const token = "the-access-token-value";
+			const ath = await computeAth(token);
+			const { jwt } = await makeProof({ ath });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `dpop ${token}` },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("accepts 'DPOP <token>' (uppercase scheme)", async () => {
+			const { app } = createApp();
+			const token = "the-access-token-value";
+			const ath = await computeAth(token);
+			const { jwt } = await makeProof({ ath });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `DPOP ${token}` },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("accepts 'Dpop <token>' (mixed case)", async () => {
+			const { app } = createApp();
+			const token = "the-access-token-value";
+			const ath = await computeAth(token);
+			const { jwt } = await makeProof({ ath });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `Dpop ${token}` },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("still ignores 'Bearer <token>'", async () => {
+			const { app } = createApp();
+			// No ath claim; if Bearer were treated as a DPoP token, the ath check would fail.
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "Bearer some-token" },
+			});
+			expect(res.status).toBe(200);
+		});
+	});
+
+	describe("access-token size check ordering (DoS shield)", () => {
+		it("rejects oversized access token before signature verification", async () => {
+			const { app } = createApp({ maxAccessTokenSize: 10 });
+			// Intentionally bad signature: tamper with the last byte. If the size
+			// check ran AFTER sig verification, we'd get an INVALID_DPOP_PROOF
+			// with a "signature" detail. Because the size check runs first, we
+			// expect the size-rejection detail instead.
+			const { jwt } = await makeProof();
+			const parts = jwt.split(".");
+			const bad = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+			const huge = "x".repeat(50_000);
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: bad, Authorization: `DPoP ${huge}` },
+			});
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string; detail: string };
+			expect(body.code).toBe("INVALID_DPOP_PROOF");
+			expect(body.detail).toMatch(/access token exceeds/);
+			expect(body.detail).not.toMatch(/signature/);
+		});
+
+		it("still rejects invalid signature normally when access token is within size", async () => {
+			const { app } = createApp();
+			const { jwt } = await makeProof();
+			const parts = jwt.split(".");
+			const bad = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: bad, Authorization: "DPoP small-token" },
+			});
+			expect(res.status).toBe(401);
+			expect((await res.json()).detail).toMatch(/signature/);
+		});
+	});
+
+	describe("nonceProvider issueNonce memoization", () => {
+		it("invokes nonceProvider.issueNonce at most once on success", async () => {
+			let calls = 0;
+			const provider: NonceProvider = {
+				issueNonce: () => {
+					calls++;
+					return "server-nonce-memo";
+				},
+				isValid: (n) => n === "server-nonce-memo",
+			};
+			const { app } = createApp({ nonceProvider: provider });
+			const { jwt } = await makeProof({ nonce: "server-nonce-memo" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-memo");
+			expect(calls).toBeLessThanOrEqual(1);
+		});
+
+		it("invokes nonceProvider.issueNonce at most once on use_nonce challenge", async () => {
+			let calls = 0;
+			const provider: NonceProvider = {
+				issueNonce: () => {
+					calls++;
+					return "server-nonce-challenge";
+				},
+				isValid: () => false,
+			};
+			const { app } = createApp({ nonceProvider: provider });
+			// No nonce in proof → use_dpop_nonce path.
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("USE_NONCE");
+			expect(res.headers.get("DPoP-Nonce")).toBe("server-nonce-challenge");
+			expect(calls).toBeLessThanOrEqual(1);
+		});
+	});
+
 	it("onError receives the algs-enriched problem", async () => {
 		let captured: { wwwAuthExtras?: Record<string, string> } | undefined;
 		const { app } = createApp({
