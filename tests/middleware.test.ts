@@ -507,4 +507,308 @@ describe("dpop middleware", () => {
 		await app.request("https://localhost/api/me");
 		expect(captured?.wwwAuthExtras?.algs).toBe("ES256");
 	});
+
+	describe("boundary values", () => {
+		// --- A. size boundaries (maxProofSize / maxAccessTokenSize) ---
+
+		it("A1: accepts proof header at exactly maxProofSize bytes", async () => {
+			const { jwt } = await makeProof();
+			// JWT is ASCII (base64url + dots) so byte length == string length.
+			const { app } = createApp({ maxProofSize: jwt.length });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		it("A2: rejects proof header at maxProofSize + 1 bytes", async () => {
+			const { jwt } = await makeProof();
+			const { app } = createApp({ maxProofSize: jwt.length - 1 });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect((await res.json()).detail).toMatch(new RegExp(`exceeds ${jwt.length - 1} bytes`));
+		});
+
+		it("A3: accepts access token at exactly maxAccessTokenSize bytes", async () => {
+			const token = "exact-size-token"; // 16 bytes ASCII
+			const ath = await computeAth(token);
+			const { jwt } = await makeProof({ ath });
+			const { app } = createApp({ maxAccessTokenSize: token.length });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `DPoP ${token}` },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("A4: rejects access token at maxAccessTokenSize + 1 bytes", async () => {
+			const token = "exact-size-token";
+			const ath = await computeAth(token);
+			const { jwt } = await makeProof({ ath });
+			const { app } = createApp({ maxAccessTokenSize: token.length - 1 });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `DPoP ${token}` },
+			});
+			expect(res.status).toBe(401);
+			expect((await res.json()).detail).toMatch(/access token exceeds/);
+		});
+
+		it("A5: maxProofSize: 0 rejects any non-empty proof", async () => {
+			const { jwt } = await makeProof();
+			const { app } = createApp({ maxProofSize: 0 });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect((await res.json()).detail).toMatch(/exceeds 0 bytes/);
+		});
+
+		// --- B. Authorization scheme parsing (resolveAccessToken) ---
+
+		it("B1: empty Authorization header is treated as no token (ignored)", async () => {
+			const { app } = createApp();
+			const { jwt } = await makeProof();
+			// Empty Authorization → falsy → undefined → ath check skipped → 200.
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "" },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("B2: 'DPoP' (no space, no token) is treated as missing", async () => {
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "DPoP" },
+			});
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		it("B3: leading-space ' DPoP token' is normalized by HTTP transport (RFC 7230 OWS strip)", async () => {
+			// Characterization: HTTP libraries strip optional whitespace around
+			// header field-values per RFC 7230 §3.2.4 before the middleware sees them.
+			// So the leading space disappears, the scheme parses cleanly as "DPoP",
+			// the access token "token" is extracted, and the request advances past
+			// the missing-access-token check. The proof has no ath claim, so the
+			// next failure is INVALID_DPOP_PROOF "ath claim is required".
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: " DPoP token" },
+			});
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string; detail: string };
+			expect(body.code).toBe("INVALID_DPOP_PROOF");
+			expect(body.detail).toMatch(/ath claim is required/);
+		});
+
+		it("B4: TAB-separated 'DPoP\\ttoken' is not recognized (only space splits)", async () => {
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof();
+			// indexOf(" ") returns -1; tab is not space → undefined.
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "DPoP\ttoken" },
+			});
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		it("B5: 'Bearer xyz' is ignored (non-DPoP scheme)", async () => {
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "Bearer xyz" },
+			});
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		// --- C. Custom getAccessToken edge cases ---
+
+		it("C1: getAccessToken returning undefined + requireAccessToken → 401", async () => {
+			const { app } = createApp({
+				getAccessToken: () => undefined,
+				requireAccessToken: true,
+			});
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		it("C2: async getAccessToken returning empty string + requireAccessToken → 401", async () => {
+			const { app } = createApp({
+				getAccessToken: async () => "",
+				requireAccessToken: true,
+			});
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			// Empty string is falsy → !accessToken triggers MISSING_ACCESS_TOKEN.
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		it("C3: getAccessToken throwing propagates (no try/catch around resolution)", async () => {
+			const app = new Hono();
+			app.use(
+				"/api/*",
+				dpop({
+					nonceStore: memoryNonceStore(),
+					getAccessToken: () => {
+						throw new Error("boom-token");
+					},
+				}),
+			);
+			app.onError((err, c) => c.json({ error: (err as Error).message }, 500));
+			app.get("/api/me", (c) => c.text("ok"));
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(500);
+			expect(((await res.json()) as { error: string }).error).toBe("boom-token");
+		});
+
+		it("C4: async getAccessToken returning a valid token verifies ath normally", async () => {
+			const token = "valid-async-token";
+			const ath = await computeAth(token);
+			const { app } = createApp({ getAccessToken: async () => token });
+			const { jwt } = await makeProof({ ath });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		// --- D. Nonce flow boundary: non-string nonce fails parse, NOT use_dpop_nonce ---
+		// parseProof rejects non-string `nonce` BEFORE the nonceProvider check runs,
+		// so these all surface as INVALID_DPOP_PROOF (characterization of current behavior).
+
+		const nonceProvider: NonceProvider = {
+			issueNonce: () => "server-nonce-X",
+			isValid: (n) => n === "server-nonce-X",
+		};
+
+		async function signWithRawNonce(rawNonce: unknown): Promise<string> {
+			const keyPair = await generateKeyPair("ES256");
+			return signProof({
+				alg: "ES256",
+				keyPair,
+				payload: {
+					jti: freshJti(),
+					htm: "GET",
+					htu: "https://localhost/api/me",
+					iat: nowSeconds(),
+					nonce: rawNonce as string | undefined,
+				},
+			});
+		}
+
+		it("D-bnd-1: nonce as number (123) fails parseProof as INVALID_DPOP_PROOF", async () => {
+			const { app } = createApp({ nonceProvider });
+			const jwt = await signWithRawNonce(123);
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string; detail: string };
+			expect(body.code).toBe("INVALID_DPOP_PROOF");
+			expect(body.detail).toMatch(/nonce must be a string/);
+		});
+
+		it("D-bnd-2: nonce as null fails parseProof as INVALID_DPOP_PROOF", async () => {
+			const { app } = createApp({ nonceProvider });
+			const jwt = await signWithRawNonce(null);
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string; detail: string };
+			expect(body.code).toBe("INVALID_DPOP_PROOF");
+			expect(body.detail).toMatch(/nonce must be a string/);
+		});
+
+		it("D-bnd-3: nonce as object ({}) fails parseProof as INVALID_DPOP_PROOF", async () => {
+			const { app } = createApp({ nonceProvider });
+			const jwt = await signWithRawNonce({});
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			const body = (await res.json()) as { code: string; detail: string };
+			expect(body.code).toBe("INVALID_DPOP_PROOF");
+			expect(body.detail).toMatch(/nonce must be a string/);
+		});
+
+		// --- E. htu fine-grained matching (URL normalization semantics) ---
+
+		it("E1: query parameter difference does not affect htu match (search stripped)", async () => {
+			const { app } = createApp();
+			const { jwt } = await makeProof({ url: "https://localhost/api/me?a=1" });
+			const res = await app.request("https://localhost/api/me?b=2", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		it("E2: port mismatch (8080 vs 8081) is rejected", async () => {
+			const app = new Hono();
+			app.use(
+				"/api/*",
+				dpop({
+					nonceStore: memoryNonceStore(),
+					getRequestUrl: () => "https://localhost:8081/api/me",
+				}),
+			);
+			app.get("/api/me", (c) => c.text("ok"));
+			const { jwt } = await makeProof({ url: "https://localhost:8080/api/me" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect((await res.json()).detail).toMatch(/htu/);
+		});
+
+		it("E3: scheme case difference is normalized (HTTPS:// matches https://)", async () => {
+			const app = new Hono();
+			app.use(
+				"/api/*",
+				dpop({
+					nonceStore: memoryNonceStore(),
+					getRequestUrl: () => "HTTPS://localhost/api/me",
+				}),
+			);
+			app.get("/api/me", (c) => c.text("ok"));
+			const { jwt } = await makeProof({ url: "https://localhost/api/me" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		it("E4: fragment difference does not affect htu match (hash stripped)", async () => {
+			const app = new Hono();
+			app.use(
+				"/api/*",
+				dpop({
+					nonceStore: memoryNonceStore(),
+					getRequestUrl: () => "https://localhost/api/me#section",
+				}),
+			);
+			app.get("/api/me", (c) => c.text("ok"));
+			const { jwt } = await makeProof({ url: "https://localhost/api/me" });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		// --- F. clock boundary ---
+
+		it("F1: clock returning epoch 0 + iat 0 + tolerance 60 is accepted", async () => {
+			const { app } = createApp({ clock: () => 0, iatTolerance: 60 });
+			// Bypass makeProof helper's nowSeconds default by passing iat: 0 explicitly.
+			const { jwt } = await makeProof({ iat: 0 });
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+
+		// --- G. requireAccessToken integration paths ---
+
+		it("G1: requireAccessToken: true happy path with Authorization + matching ath → 200", async () => {
+			const token = "happy-path-token";
+			const ath = await computeAth(token);
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof({ ath });
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: `DPoP ${token}` },
+			});
+			expect(res.status).toBe(200);
+		});
+
+		it("G2: requireAccessToken: false + no Authorization header → 200 (ath skipped)", async () => {
+			const { app } = createApp({ requireAccessToken: false });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+		});
+	});
 });
