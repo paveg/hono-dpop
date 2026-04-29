@@ -219,3 +219,194 @@ describe("problemResponse — additionalHeaders + wwwAuthExtras from ProblemDeta
 		expect(auth).toContain('realm="api"');
 	});
 });
+
+describe("clampHttpStatus — boundary values", () => {
+	it("returns 500 for negative integers", () => {
+		expect(clampHttpStatus(-1)).toBe(500);
+		expect(clampHttpStatus(-500)).toBe(500);
+	});
+
+	it("returns 500 for negative infinity and zero", () => {
+		expect(clampHttpStatus(Number.NEGATIVE_INFINITY)).toBe(500);
+		expect(clampHttpStatus(0)).toBe(500);
+	});
+
+	it("enforces the 200 lower boundary inclusively", () => {
+		expect(clampHttpStatus(199)).toBe(500);
+		expect(clampHttpStatus(200)).toBe(200);
+	});
+
+	it("enforces the 599 upper boundary inclusively", () => {
+		expect(clampHttpStatus(599)).toBe(599);
+		expect(clampHttpStatus(600)).toBe(500);
+	});
+
+	it("returns 500 for non-integer values within range", () => {
+		expect(clampHttpStatus(200.5)).toBe(500);
+	});
+});
+
+describe("wwwAuthenticateHeader — quoteString boundaries (via header)", () => {
+	it("formats with no extras when extras is an empty object", () => {
+		expect(wwwAuthenticateHeader("invalid_token", {})).toBe('DPoP error="invalid_token"');
+	});
+
+	it("formats with no extras when extras is undefined", () => {
+		expect(wwwAuthenticateHeader("invalid_token", undefined)).toBe('DPoP error="invalid_token"');
+	});
+
+	it("appends a single extra parameter", () => {
+		expect(wwwAuthenticateHeader("invalid_token", { algs: "ES256 RS256" })).toBe(
+			'DPoP error="invalid_token", algs="ES256 RS256"',
+		);
+	});
+
+	it("escapes an empty string value to empty (no escapes introduced)", () => {
+		// Source `""` is the empty string; quoteString should leave it empty.
+		expect(wwwAuthenticateHeader("invalid_token", { x: "" })).toBe(
+			'DPoP error="invalid_token", x=""',
+		);
+	});
+
+	it("doubles four backslashes to eight (\\\\\\\\ -> \\\\\\\\\\\\\\\\)", () => {
+		// Input value (4 chars): 4 backslashes — written as "\\\\\\\\" in source.
+		// Each \ -> \\, so output value (8 chars): 8 backslashes — written as 16 source backslashes.
+		const input = "\\\\\\\\"; // 4 backslashes
+		const output = wwwAuthenticateHeader("invalid_token", { x: input });
+		expect(output).toBe('DPoP error="invalid_token", x="\\\\\\\\\\\\\\\\"');
+	});
+
+	it("escapes three consecutive double quotes", () => {
+		// Input value (3 chars): three " — source: '"""'.
+		// Each " -> \", so output value (6 chars): \"\"\"  — source: '\\"\\"\\"'.
+		const input = '"""';
+		const output = wwwAuthenticateHeader("invalid_token", { x: input });
+		expect(output).toBe('DPoP error="invalid_token", x="\\"\\"\\""');
+	});
+
+	it("escapes backslash before quote (order: backslash first)", () => {
+		// Input value (2 chars): backslash, quote — source: '\\"'.
+		// Naive ordering would: " -> \" first, then \\ (matches the new \), giving \\\\"" (wrong).
+		// Correct ordering: \ -> \\ first (1 -> 2 backslashes), then " -> \", net: 3 chars
+		// Wait — input is 2 chars (\, "). After \ -> \\: 3 chars (\, \, "). After " -> \": 4 chars
+		// (\, \, \, "). Source representation: '\\\\\\"'.
+		const input = '\\"';
+		const output = wwwAuthenticateHeader("invalid_token", { x: input });
+		expect(output).toBe('DPoP error="invalid_token", x="\\\\\\""');
+	});
+});
+
+describe("DPoPErrors.invalidProof — sanitizeDetail length boundaries", () => {
+	it("preserves a 255-char input verbatim", () => {
+		const s = "x".repeat(255);
+		const p = DPoPErrors.invalidProof(s);
+		expect(p.detail).toBe(s);
+		expect(p.detail.length).toBe(255);
+	});
+
+	it("preserves a 256-char input verbatim (exact boundary)", () => {
+		const s = "x".repeat(256);
+		const p = DPoPErrors.invalidProof(s);
+		expect(p.detail).toBe(s);
+		expect(p.detail.length).toBe(256);
+		expect(p.detail.endsWith("…")).toBe(false);
+	});
+
+	it("truncates a 257-char input to 256 chars + ellipsis (total length 257)", () => {
+		const s = "x".repeat(257);
+		const p = DPoPErrors.invalidProof(s);
+		expect(p.detail.length).toBe(257);
+		expect(p.detail).toBe(`${"x".repeat(256)}…`);
+	});
+
+	it("truncates a 1000-char input to 256 chars + ellipsis", () => {
+		const s = "x".repeat(1000);
+		const p = DPoPErrors.invalidProof(s);
+		expect(p.detail.length).toBe(257);
+		expect(p.detail).toBe(`${"x".repeat(256)}…`);
+	});
+
+	it("strips a mix of NUL/ESC/DEL and preserves the surrounding letters", () => {
+		const p = DPoPErrors.invalidProof("\x00abc\x1Bdef\x7Fghi");
+		expect(p.detail).toBe("abcdefghi");
+	});
+
+	it("counts length AFTER stripping control chars (200 control + 200 'a' fits)", () => {
+		const ctrl = "\x00".repeat(200);
+		const letters = "a".repeat(200);
+		const p = DPoPErrors.invalidProof(ctrl + letters);
+		// Cleaned length is 200 (well under 256), so no truncation.
+		expect(p.detail).toBe(letters);
+		expect(p.detail.endsWith("…")).toBe(false);
+	});
+
+	it("truncates Japanese (300 chars) to 256 + ellipsis", () => {
+		const jp = "あいうえお".repeat(60); // 5 * 60 = 300 chars
+		const p = DPoPErrors.invalidProof(jp);
+		expect(p.detail.length).toBe(257);
+		expect(p.detail).toBe(`${jp.slice(0, 256)}…`);
+		expect(p.detail.endsWith("…")).toBe(true);
+	});
+});
+
+describe("DPoPErrors.useNonce — special-character nonces", () => {
+	it("propagates a quoted nonce: raw in DPoP-Nonce, escaped in WWW-Authenticate", () => {
+		const nonce = 'nonce"with"quotes';
+		const problem = DPoPErrors.useNonce(nonce);
+		expect(problem.wwwAuthExtras).toEqual({ nonce });
+		expect(problem.additionalHeaders).toEqual({ "DPoP-Nonce": nonce });
+		const res = problemResponse(problem);
+		// DPoP-Nonce header carries the raw value (no escaping applied to header values).
+		expect(res.headers.get("DPoP-Nonce")).toBe(nonce);
+		// WWW-Authenticate quotes the nonce per RFC 7230 §3.2.6.
+		const auth = res.headers.get("WWW-Authenticate");
+		expect(auth).toContain('error="use_dpop_nonce"');
+		expect(auth).toContain('nonce="nonce\\"with\\"quotes"');
+	});
+
+	it("propagates a backslash-laden nonce with correct escaping", () => {
+		const nonce = "back\\\\slash"; // source 4 backslashes -> 2 actual backslashes
+		const problem = DPoPErrors.useNonce(nonce);
+		const res = problemResponse(problem);
+		expect(res.headers.get("DPoP-Nonce")).toBe(nonce);
+		// Each \ -> \\, so two \ become four \ in the quoted-string.
+		expect(res.headers.get("WWW-Authenticate")).toContain('nonce="back\\\\\\\\slash"');
+	});
+
+	it("accepts an empty nonce", () => {
+		const problem = DPoPErrors.useNonce("");
+		expect(problem.wwwAuthExtras).toEqual({ nonce: "" });
+		expect(problem.additionalHeaders).toEqual({ "DPoP-Nonce": "" });
+		const res = problemResponse(problem);
+		// Empty header values are coerced to "" by Headers; the key is still present.
+		expect(res.headers.get("DPoP-Nonce")).toBe("");
+		expect(res.headers.get("WWW-Authenticate")).toContain('nonce=""');
+	});
+});
+
+describe("problemResponse — merge precedence", () => {
+	it("caller wwwAuthExtras override ProblemDetail.wwwAuthExtras on key collision", () => {
+		const problem = { ...DPoPErrors.invalidProof("x"), wwwAuthExtras: { foo: "a" } };
+		const res = problemResponse(problem, { wwwAuthExtras: { foo: "b" } });
+		const auth = res.headers.get("WWW-Authenticate");
+		expect(auth).toContain('foo="b"');
+		expect(auth).not.toContain('foo="a"');
+	});
+
+	it("caller extraHeaders override ProblemDetail.additionalHeaders on key collision", () => {
+		const problem = {
+			...DPoPErrors.invalidProof("x"),
+			additionalHeaders: { "X-Custom": "1" },
+		};
+		const res = problemResponse(problem, { extraHeaders: { "X-Custom": "2" } });
+		expect(res.headers.get("X-Custom")).toBe("2");
+	});
+
+	it("emits DPoP-Nonce exactly once for useNonce-derived responses", () => {
+		const res = problemResponse(DPoPErrors.useNonce("abc"));
+		// Headers.get returns the single value; ensure no comma-joined duplicates.
+		const value = res.headers.get("DPoP-Nonce");
+		expect(value).toBe("abc");
+		expect(value).not.toContain(",");
+	});
+});
