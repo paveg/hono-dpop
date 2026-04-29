@@ -467,3 +467,281 @@ describe("timingSafeEqual", () => {
 		expect(timingSafeEqual("x", "")).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Boundary characterization tests
+//
+// These pin down the exact off-by-one and edge behaviors of verify.ts so
+// future refactors can't silently shift the boundary. They intentionally
+// exercise both sides of every "<=" / "<" / ">" comparison.
+// ---------------------------------------------------------------------------
+
+describe("verifyProofClaims — iat tolerance boundaries (off-by-one)", () => {
+	const FIXED_NOW = 1_700_000_000;
+	const TOLERANCE = 60;
+
+	async function parsedAt(iat: number) {
+		const { jwt } = await makeValidProof({ now: iat });
+		return parseProof(jwt, ALL);
+	}
+
+	it("accepts delta = +iatTolerance exactly (boundary uses '>' not '>=')", async () => {
+		const parsed = await parsedAt(FIXED_NOW - TOLERANCE);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+			}),
+		).not.toThrow();
+	});
+
+	it("rejects delta = +iatTolerance + 1 (just past the past edge)", async () => {
+		const parsed = await parsedAt(FIXED_NOW - TOLERANCE - 1);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+			}),
+		).toThrow(/iat/);
+	});
+
+	it("accepts delta = -iatTolerance exactly with allowFutureIat: false", async () => {
+		const parsed = await parsedAt(FIXED_NOW + TOLERANCE);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+				allowFutureIat: false,
+			}),
+		).not.toThrow();
+	});
+
+	it("rejects delta = -iatTolerance - 1 with allowFutureIat: false", async () => {
+		const parsed = await parsedAt(FIXED_NOW + TOLERANCE + 1);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+				allowFutureIat: false,
+			}),
+		).toThrow(/iat/);
+	});
+
+	it("accepts delta = -iatTolerance - 1 with allowFutureIat: true (only past staleness gated)", async () => {
+		const parsed = await parsedAt(FIXED_NOW + TOLERANCE + 1);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+				allowFutureIat: true,
+			}),
+		).not.toThrow();
+	});
+
+	it("rejects delta = +iatTolerance + 1 even with allowFutureIat: true (tooOld still enforced)", async () => {
+		const parsed = await parsedAt(FIXED_NOW - TOLERANCE - 1);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: parsed.payload.htm,
+				htu: parsed.payload.htu,
+				now: FIXED_NOW,
+				iatTolerance: TOLERANCE,
+				allowFutureIat: true,
+			}),
+		).toThrow(/iat/);
+	});
+});
+
+describe("parseProof — iat numeric boundaries", () => {
+	// Use "AA" (a 2-char string that decodes cleanly) for the signature segment
+	// because parseProof eagerly validates base64url shape on the sig — happy-path
+	// boundaries must clear that gate to actually reach the iat checks.
+	const valid = (extra: object) => `${GOOD_HEADER}.${base64urlEncode(JSON.stringify(extra))}.AA`;
+
+	it("accepts iat = 0 (lower inclusive boundary)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: 0 });
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
+	it("rejects iat = -1 (just below the lower bound)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: -1 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("accepts iat = MAX_IAT (1e10, upper inclusive boundary)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: 1e10 });
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
+	it("rejects iat = 1e10 + 1 (just above MAX_IAT)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: 1e10 + 1 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("rejects iat = 1.5 (non-integer)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: 1.5 });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("rejects iat = NaN (JSON.stringify normalizes to null → fails 'must be number')", () => {
+		// JSON has no NaN literal; JSON.stringify({iat: NaN}) emits {"iat":null},
+		// which parseProof rejects via the typeof check before hitting MAX_IAT.
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: Number.NaN });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+
+	it("rejects iat = Infinity (JSON.stringify normalizes to null)", () => {
+		const jwt = valid({ jti: "a", htm: "GET", htu: "https://x", iat: Number.POSITIVE_INFINITY });
+		expect(() => parseProof(jwt, ALL)).toThrow(/iat/);
+	});
+});
+
+describe("normalizeHtu — trailing-slash-insensitive specifics", () => {
+	const TSI = "trailing-slash-insensitive" as const;
+
+	it("treats https://x/api and https://x/api/ as equal (both directions)", () => {
+		expect(normalizeHtu("https://x/api", TSI)).toBe(normalizeHtu("https://x/api/", TSI));
+		expect(normalizeHtu("https://x/api/", TSI)).toBe(normalizeHtu("https://x/api", TSI));
+	});
+
+	it("preserves the lone root slash on https://x/", () => {
+		expect(normalizeHtu("https://x/", TSI)).toBe("https://x/");
+	});
+
+	it("URL parser supplies the root slash for https://x (no slash) and TSI keeps it", () => {
+		// new URL("https://x").toString() → "https://x/", which TSI must NOT strip.
+		expect(normalizeHtu("https://x", TSI)).toBe("https://x/");
+	});
+
+	it("strips exactly one trailing slash from https://x/api// (leaves the inner '/')", () => {
+		// Documents single-strip behavior — the loop is a single slice(0,-1), not a
+		// while-loop, so consecutive trailing slashes collapse by one only.
+		expect(normalizeHtu("https://x/api//", TSI)).toBe("https://x/api/");
+	});
+
+	it("strips search and fragment under TSI policy", () => {
+		expect(normalizeHtu("https://x/path?q=1#frag", TSI)).toBe("https://x/path");
+	});
+});
+
+describe("parseProof — segment count and emptiness", () => {
+	it("rejects a string with zero periods", () => {
+		expect(() => parseProof("abc", ALL)).toThrow(/not a JWT/);
+	});
+
+	it("rejects a string with exactly one period", () => {
+		expect(() => parseProof("a.b", ALL)).toThrow(/not a JWT/);
+	});
+
+	it("rejects a string with four periods", () => {
+		expect(() => parseProof("a.b.c.d.e", ALL)).toThrow(/not a JWT/);
+	});
+
+	it("rejects a trailing period (a.b.c.) — split yields 4 parts", () => {
+		expect(() => parseProof("a.b.c.", ALL)).toThrow(/not a JWT/);
+	});
+
+	it("rejects a leading period (.a.b) — empty header decodes to '' → JSON.parse fails", () => {
+		// split(".a.b") = ["", "a", "b"] (length 3, passes the parts check),
+		// then base64urlDecode("") returns 0 bytes, and JSON.parse("") throws.
+		expect(() => parseProof(".a.b", ALL)).toThrow(/header section is not valid JSON/);
+	});
+
+	it("rejects fully empty between separators (..)", () => {
+		// split("..") = ["", "", ""] — three empty parts, header JSON.parse fails first.
+		expect(() => parseProof("..", ALL)).toThrow(/header section is not valid JSON/);
+	});
+});
+
+describe("parseProof — payload base64url valid but JSON invalid", () => {
+	it("rejects payload that decodes to non-JSON bytes", () => {
+		// 'not-json' is base64url-encodable; its decoded bytes are not valid JSON.
+		const jwt = `${GOOD_HEADER}.${base64urlEncode("not-json")}.x`;
+		expect(() => parseProof(jwt, ALL)).toThrow(/payload section is not valid JSON/);
+	});
+});
+
+describe("timingSafeEqual — additional UTF-8 boundaries", () => {
+	it("returns true for identical 4-byte UTF-8 sequence (😀)", () => {
+		expect(timingSafeEqual("😀", "😀")).toBe(true);
+	});
+
+	it("returns false for two different 4-byte UTF-8 emoji (😀 vs 🚀)", () => {
+		expect(timingSafeEqual("😀", "🚀")).toBe(false);
+	});
+
+	it("returns true for identical 2-byte UTF-8 sequence (ÿ)", () => {
+		// 'ÿ' (U+00FF) encodes to two UTF-8 bytes [0xC3, 0xBF].
+		expect(timingSafeEqual("ÿ", "ÿ")).toBe(true);
+	});
+});
+
+describe("computeAth — empty input boundary", () => {
+	it("returns the SHA-256 base64url digest of the empty string", async () => {
+		// SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+		// → base64url (no pad): "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+		const digest = await computeAth("");
+		expect(digest).toBe("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU");
+		expect(digest).toHaveLength(43);
+	});
+});
+
+describe("parseProof — typ and alg fine boundaries", () => {
+	const valid = (header: object, extra: object = { jti: "a", htm: "GET", htu: "u", iat: 0 }) =>
+		`${base64urlEncode(JSON.stringify(header))}.${base64urlEncode(JSON.stringify(extra))}.x`;
+
+	it("rejects typ = 'DPOP+JWT' (case-strict)", () => {
+		const jwt = valid({
+			typ: "DPOP+JWT",
+			alg: "ES256",
+			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+		});
+		expect(() => parseProof(jwt, ALL)).toThrow(/typ must/);
+	});
+
+	it("rejects typ = 'dpop+jwt ' (trailing whitespace)", () => {
+		const jwt = valid({
+			typ: "dpop+jwt ",
+			alg: "ES256",
+			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+		});
+		expect(() => parseProof(jwt, ALL)).toThrow(/typ must/);
+	});
+
+	it("rejects alg = '' (empty string passes typeof but fails the supported check)", () => {
+		const jwt = valid({
+			typ: "dpop+jwt",
+			alg: "",
+			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+		});
+		expect(() => parseProof(jwt, ALL)).toThrow(/unsupported alg/);
+	});
+
+	it("rejects alg = 'none'", () => {
+		const jwt = valid({
+			typ: "dpop+jwt",
+			alg: "none",
+			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+		});
+		expect(() => parseProof(jwt, ALL)).toThrow(/unsupported alg/);
+	});
+
+	it("rejects alg = 'HS256' (symmetric algs are always disallowed)", () => {
+		const jwt = valid({
+			typ: "dpop+jwt",
+			alg: "HS256",
+			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+		});
+		expect(() => parseProof(jwt, ALL)).toThrow(/unsupported alg/);
+	});
+});
