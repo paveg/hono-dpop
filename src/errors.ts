@@ -27,15 +27,22 @@ export function clampHttpStatus(status: number): number {
 const PROBLEM_CONTENT_TYPE = "application/problem+json; charset=utf-8";
 const BASE_URL = "https://hono-dpop.dev/errors";
 
+// RFC 7230 §3.2.6 quoted-string: quoted-pair = "\" ( HTAB / SP / VCHAR / obs-text ).
+// Both backslash and double-quote must be backslash-escaped. Order matters —
+// escape backslashes BEFORE introducing new ones via the quote escape.
+function quoteString(v: string): string {
+	return v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 /** Build an `WWW-Authenticate: DPoP error="...", key="value", ...` header value. */
 export function wwwAuthenticateHeader(
 	wwwAuthError: string,
 	extras?: Record<string, string>,
 ): string {
-	const params: string[] = [`error="${wwwAuthError}"`];
+	const params: string[] = [`error="${quoteString(wwwAuthError)}"`];
 	if (extras) {
 		for (const [k, v] of Object.entries(extras)) {
-			params.push(`${k}="${v.replace(/"/g, '\\"')}"`);
+			params.push(`${k}="${quoteString(v)}"`);
 		}
 	}
 	return `DPoP ${params.join(", ")}`;
@@ -82,13 +89,25 @@ export class DPoPProofError extends Error {
 	}
 }
 
+/** Strip control characters (CR, LF, ESC, NUL, C1 range) and cap length.
+ *  `invalidProof` detail is built from attacker-controlled proof claims (alg,
+ *  typ, htm, htu) and is echoed in JSON response bodies AND often in operator
+ *  logs verbatim. Sanitization prevents log/terminal injection (CRLF log
+ *  forging, ANSI escape spoofing). */
+function sanitizeDetail(detail: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: deliberate stripping of control chars.
+	const cleaned = detail.replace(/[\x00-\x1F\x7F-\x9F]/g, "");
+	const MAX_DETAIL_LEN = 256;
+	return cleaned.length > MAX_DETAIL_LEN ? `${cleaned.slice(0, MAX_DETAIL_LEN)}…` : cleaned;
+}
+
 export const DPoPErrors = {
 	invalidProof(detail: string): ProblemDetail {
 		return {
 			type: `${BASE_URL}/invalid-dpop-proof`,
 			title: "Invalid DPoP proof",
 			status: 401,
-			detail,
+			detail: sanitizeDetail(detail),
 			code: "INVALID_DPOP_PROOF",
 			wwwAuthError: "invalid_dpop_proof",
 		};
