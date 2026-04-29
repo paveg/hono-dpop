@@ -6,27 +6,37 @@ DPoP (Demonstrating Proof-of-Possession, RFC 9449) middleware for Hono.
 
 Verifies the `DPoP` proof JWT on incoming requests:
 
-1. Parse the `DPoP` header as a JWT
-2. Validate the JWT header (`typ=dpop+jwt`, `alg` is asymmetric, `jwk` present)
-3. Verify the signature using the embedded `jwk`
-4. Validate claims: `htm` matches request method, `htu` matches request URL, `iat` is within tolerance window
-5. Check `jti` against the replay-cache store
-6. If `Authorization: DPoP <token>` is present, verify `ath = base64url(SHA-256(token))`
-7. Expose the verified proof and JWK thumbprint on `c.get("dpop")`
+1. Bound input size (`maxProofSize`, default 8192 bytes) before any decode
+2. Parse the `DPoP` header as a JWT
+3. Validate the JWT header (`typ=dpop+jwt`, `alg` is asymmetric, `jwk` present)
+4. Verify the signature using the embedded `jwk`
+5. Validate claims: `htm` matches request method, `htu` matches request URL, `iat` within tolerance
+6. (Optional) Validate the `nonce` claim against a `NonceProvider` (RFC 9449 §8)
+7. Check `jti` against the pluggable replay-cache store
+8. If `Authorization: DPoP <token>` present, verify `ath = base64url(SHA-256(token))`
+9. Expose the verified proof and JWK thumbprint on `c.get("dpop")`
 
-The middleware does NOT introspect the access token itself — that remains the caller's responsibility. Use the exposed `c.get("dpop").jkt` to compare against your access token's `cnf.jkt` claim.
+The middleware does NOT introspect the access token — that remains the caller's responsibility. Use `c.get("dpop").jkt` against the access token's `cnf.jkt` claim, e.g. via `assertJktBinding(claims, jkt)` / `verifyJktBinding(claims, jkt)`.
 
 ## Public API
 
 ```ts
-import { dpop, DPoPErrors, problemResponse } from "hono-dpop";
+import { dpop, assertJktBinding, verifyJktBinding, DPoPErrors, problemResponse } from "hono-dpop";
 import { memoryNonceStore } from "hono-dpop/stores/memory";
-import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof, ProblemDetail } from "hono-dpop";
+import { memoryNonceProvider } from "hono-dpop/stores/memory-nonce-provider";
+import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof, ProblemDetail, NonceProvider, DPoPNonceStore } from "hono-dpop";
 
 app.use("/api/*", dpop({
   nonceStore: memoryNonceStore(),
-  iatTolerance: 60,
-  jtiTtl: 5 * 60_000,
+  iatTolerance: 60,                            // seconds
+  jtiTtl: 5 * 60_000,                          // ms
+  maxProofSize: 8192,                          // bytes; DoS shield
+  maxAccessTokenSize: 4096,                    // bytes; DoS shield
+  htuComparison: "strict",                     // or "trailing-slash-insensitive"
+  allowFutureIat: false,                       // when true, only past staleness rejected
+  clock: () => Date.now(),                     // injectable for tests / clock-skew compensation
+  nonceProvider: memoryNonceProvider({ rotateAfter: 5 * 60_000 }),
+  requireAccessToken: false,
 }));
 
 app.get("/api/me", (c) => {
@@ -37,14 +47,27 @@ app.get("/api/me", (c) => {
 
 ## Errors
 
-All errors are RFC 9457 Problem Details with `Content-Type: application/problem+json` and an RFC 9449 `WWW-Authenticate: DPoP error="..."` header.
+All errors are RFC 9457 Problem Details with `Content-Type: application/problem+json` and an RFC 9449 `WWW-Authenticate: DPoP error="..."` header. Every 401 also carries `algs="..."` so clients can discover supported algorithms.
 
-| Status | Code | When |
-|--------|------|------|
-| 400 | `INVALID_DPOP_PROOF` | Header missing/malformed, signature invalid, claims invalid |
-| 401 | `MISSING_ACCESS_TOKEN` | `requireAccessToken: true` and `Authorization: DPoP` missing |
-| 401 | `ATH_MISMATCH` | `ath` claim does not match SHA-256 of access token |
-| 401 | `JTI_REPLAY` | `jti` already used within window |
+| Status | Code | `error=` | When |
+|--------|------|----------|------|
+| 401 | `INVALID_DPOP_PROOF` | `invalid_dpop_proof` | Header missing/malformed/oversized, signature invalid, claims invalid (htm, htu, iat, typ, alg, jwk), multiple `DPoP` headers |
+| 401 | `MISSING_ACCESS_TOKEN` | `invalid_token` | `requireAccessToken: true` and `Authorization: DPoP` missing |
+| 401 | `ATH_MISMATCH` | `invalid_token` | `ath` claim does not match SHA-256 of access token |
+| 401 | `JTI_REPLAY` | `invalid_dpop_proof` | `jti` already used within `jtiTtl` |
+| 401 | `USE_NONCE` | `use_dpop_nonce` | `nonceProvider` set and proof has no current `nonce` claim. Response carries fresh `DPoP-Nonce` header |
+
+## Stores
+
+Pluggable replay cache via the `DPoPNonceStore` interface (`check(jti, expiresAt)` + `purge()`). Built-in:
+
+| Store | Module | Consistency | Atomic insert-if-absent | Best for |
+|-------|--------|-------------|-------------------------|----------|
+| `memoryNonceStore`     | `hono-dpop/stores/memory`            | strong (per process) | yes (single thread) | dev, single-instance |
+| `redisStore`           | `hono-dpop/stores/redis`             | strong               | `SET NX EX`         | multi-instance (BYO ioredis / node-redis / @upstash/redis) |
+| `kvStore`              | `hono-dpop/stores/cloudflare-kv`     | eventual             | best-effort         | Cloudflare Workers tolerating rare replays |
+| `d1Store`              | `hono-dpop/stores/cloudflare-d1`     | strong               | `INSERT OR IGNORE`  | Cloudflare Workers needing strict atomicity |
+| `durableObjectStore`   | `hono-dpop/stores/durable-objects`   | strong               | single writer       | Cloudflare Workers needing per-tenant isolation |
 
 ## Cross-runtime
 
