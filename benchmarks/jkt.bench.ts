@@ -1,5 +1,5 @@
 import { bench, describe } from "vitest";
-import { type JwsAlgorithm, type PublicJwk, jwkThumbprint } from "../src/jwk.js";
+import { type JwsAlgorithm, jwkThumbprint, type PublicJwk } from "../src/jwk.js";
 import { exportPublicJwk, generateKeyPair } from "../tests/helpers.js";
 
 const ALGORITHMS = [

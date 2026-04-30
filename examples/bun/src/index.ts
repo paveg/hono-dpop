@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { dpop } from "hono-dpop";
 import type { DPoPEnv } from "hono-dpop";
+import { dpop } from "hono-dpop";
 import { memoryNonceStore } from "hono-dpop/stores/memory";
 
 const app = new Hono<DPoPEnv>();

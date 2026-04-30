@@ -71,14 +71,26 @@
 	"sideEffects": false,
 	"typesVersions": {
 		"*": {
-			"stores/memory": ["./dist/stores/memory.d.ts"],
-			"stores/redis": ["./dist/stores/redis.d.ts"],
-			"stores/cloudflare-kv": ["./dist/stores/cloudflare-kv.d.ts"],
-			"stores/cloudflare-d1": ["./dist/stores/cloudflare-d1.d.ts"],
-			"stores/durable-objects": ["./dist/stores/durable-objects.d.ts"]
+			"stores/memory": [
+				"./dist/stores/memory.d.ts"
+			],
+			"stores/redis": [
+				"./dist/stores/redis.d.ts"
+			],
+			"stores/cloudflare-kv": [
+				"./dist/stores/cloudflare-kv.d.ts"
+			],
+			"stores/cloudflare-d1": [
+				"./dist/stores/cloudflare-d1.d.ts"
+			],
+			"stores/durable-objects": [
+				"./dist/stores/durable-objects.d.ts"
+			]
 		}
 	},
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"scripts": {
 		"build": "tsup",
 		"test": "vitest run",
@@ -121,7 +133,7 @@
 		}
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^1.9.4",
+		"@biomejs/biome": "^2.4.13",
 		"@changesets/changelog-github": "0.6.0",
 		"@changesets/cli": "2.31.0",
 		"@vitest/coverage-v8": "3.2.4",
@@ -141,6 +153,10 @@
 	},
 	"packageManager": "pnpm@10.14.0",
 	"pnpm": {
-		"onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "lefthook"]
+		"onlyBuiltDependencies": [
+			"@biomejs/biome",
+			"esbuild",
+			"lefthook"
+		]
 	}
 }

@@ -1,12 +1,12 @@
 import { base64urlDecode, base64urlDecodeToString, base64urlEncode } from "./base64url.js";
 import { DPoPErrors, DPoPProofError } from "./errors.js";
 import {
-	type JwsAlgorithm,
-	type PublicJwk,
 	assertAlgMatchesJwk,
 	assertPublicJwk,
 	importPublicJwk,
 	isSupportedAlgorithm,
+	type JwsAlgorithm,
+	type PublicJwk,
 	verifyParamsFor,
 } from "./jwk.js";
 

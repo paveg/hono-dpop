@@ -66,7 +66,7 @@ export function assertPublicJwk(jwk: unknown): asserts jwk is PublicJwk {
 	// Use own-property check so a polluted Object.prototype cannot cause
 	// false rejection of an otherwise valid public jwk.
 	for (const f of PRIVATE_FIELDS) {
-		if (Object.prototype.hasOwnProperty.call(j, f)) {
+		if (Object.hasOwn(j, f)) {
 			throw new TypeError(`jwk must not contain private field "${f}"`);
 		}
 	}

@@ -9,16 +9,16 @@ import {
 	wwwAuthenticateHeader,
 } from "./errors.js";
 import {
-	type JwsAlgorithm,
-	SUPPORTED_ALGORITHMS,
 	isSupportedAlgorithm,
+	type JwsAlgorithm,
 	jwkThumbprint,
+	SUPPORTED_ALGORITHMS,
 } from "./jwk.js";
 import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof } from "./types.js";
 import {
-	type ParsedProof,
 	computeAth,
 	normalizeHtu,
+	type ParsedProof,
 	parseProof,
 	timingSafeEqual,
 	verifyProofClaims,

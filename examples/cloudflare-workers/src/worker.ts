@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { dpop } from "hono-dpop";
 import type { DPoPEnv } from "hono-dpop";
+import { dpop } from "hono-dpop";
 import { memoryNonceStore } from "hono-dpop/stores/memory";
 
 // Bindings is empty today; declared so future KV/D1 bindings slot in cleanly.
