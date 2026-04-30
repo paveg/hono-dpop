@@ -19,7 +19,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # Node 24 ships with npm 11.x, required for Trusted Publishing (OIDC).
           # Node 22 ships with npm 10.x, and `npm install -g npm@latest` is
