@@ -17,8 +17,9 @@ The middleware is a **resource-server-side** DPoP verifier (RFC 9449). It does n
 | 7 | Replay a stale proof signed long ago | `iat` freshness window | `iatTolerance` (default 60 s) in `verifyProofClaims` | Tune for the tightest tolerance your clients can sustain |
 | 8 | Bind a proof to one access token, present another | `ath` claim = SHA-256(access token) | `computeAth` + `timingSafeEqual` in `src/middleware.ts` when an access token is presented | Decide whether `requireAccessToken: true` is appropriate for the route |
 | 9 | Smuggle a private key in the proof header | Proof must carry only the public jwk | `assertPublicJwk` rejects any of `d, p, q, dp, dq, qi, oth, k` | — |
-| 10 | DoS via huge `DPoP` header | — (gap) | NOT YET (planned for v0.2) | Cap header size at the edge (CDN, proxy) for now |
+| 10 | DoS via huge `DPoP` header or access token | — (gap) | `maxProofSize` (default 8192) + `maxAccessTokenSize` (default 4096) bound input before any decode | Tune the limits if your tokens are larger than 4 KB |
 | 11 | MitM token / proof capture in transit | TLS | Out of scope | Use TLS 1.3 |
+| 12 | Replay window wider than necessary | RFC 9449 §8 server-issued nonce | `nonceProvider` option emits `use_dpop_nonce` 401 + fresh `DPoP-Nonce` header on missing/invalid nonce; success path echoes the nonce | Provide a shared-store provider (Redis/KV) when running multi-instance |
 
 The numbered rows below expand on each goal.
 
@@ -29,17 +30,21 @@ Before the threat-by-threat sections, here is the full pipeline as it appears in
 | Stage | Source | Rejects |
 |---|---|---|
 | Header presence | `c.req.header("DPoP")` | absent header |
+| Header size guard | `maxProofSize` (default 8192 bytes) | proof header exceeding the byte cap, before any decode |
+| Multi-header guard | `proofHeader.includes(", ")` | multiple `DPoP` headers (RFC 9449 §4.3 step 1) — Headers API joins with `", "`, which is a positive smuggling signal since proofs are base64url and contain no commas |
+| Access-token resolution + size guard | `resolveAccessToken` + `maxAccessTokenSize` (default 4096) | oversized `Authorization: DPoP <token>` value, before `ath` SHA-256 work |
 | `parseProof` — JWT shape | `src/verify.ts` | non-three-segment input, non-JSON header/payload, non-object header/payload |
 | `parseProof` — `typ` | same | anything other than `"dpop+jwt"` |
 | `parseProof` — `alg` | same | non-string, unknown, not in caller's allowlist |
 | `parseProof` — `jwk` | `assertPublicJwk` in `src/jwk.ts` | missing jwk, wrong kty, missing required public params, **any private field (`d`/`p`/`q`/`dp`/`dq`/`qi`/`oth`/`k`)** |
 | `parseProof` — alg/jwk match | `assertAlgMatchesJwk` in `src/jwk.ts` | EC alg + non-EC jwk, EC alg + wrong curve, RSA alg + non-RSA jwk, EdDSA + non-OKP |
-| `parseProof` — claim shapes | `src/verify.ts` | missing `jti`, non-string `htm`/`htu`, non-finite `iat`, non-string `ath`/`nonce` (when present) |
+| `parseProof` — claim shapes | `src/verify.ts` | missing `jti`, non-string `htm`/`htu`, non-integer or out-of-bounds `iat` (`MAX_IAT = 1e10`), non-string `ath`/`nonce` (when present) |
 | `parseProof` — sig shape | `base64urlDecode(encSig)` | malformed base64url (early-fail before crypto) |
-| `verifyProofClaims` — `htm` | `src/verify.ts` | proof's `htm` ≠ request method |
-| `verifyProofClaims` — `htu` | `normalizeHtu` | unparseable URL on either side, mismatch after stripping query/fragment |
-| `verifyProofClaims` — `iat` | freshness check | `|now - iat| > iatTolerance` |
+| `verifyProofClaims` — `htm` | `src/verify.ts` | proof's `htm` ≠ request method (case-sensitive per RFC 9110 §9.1) |
+| `verifyProofClaims` — `htu` | `normalizeHtu` | unparseable URL on either side, mismatch after stripping query/fragment (with optional trailing-slash relaxation) |
+| `verifyProofClaims` — `iat` | freshness check | `now - iat > iatTolerance`, or `iat - now > iatTolerance` unless `allowFutureIat: true` |
 | `verifyProofSignature` | `crypto.subtle.verify` | signature does not verify against the embedded jwk |
+| Nonce challenge (when `nonceProvider` set) | `nonceProvider.isValid` | missing or invalid `nonce` claim — emits `use_dpop_nonce` 401 with a fresh `DPoP-Nonce` header. Constant-time wrt missing-vs-invalid |
 | Access-token presence | `requireAccessToken` | option set and `Authorization: DPoP` missing |
 | `ath` matching | `computeAth` + `timingSafeEqual` | access token presented but proof has no `ath`, or `ath` does not match `SHA-256(token)` |
 | `nonceStore.check` | `src/middleware.ts` | `jti` already recorded within its expiry |
@@ -157,15 +162,20 @@ A buggy verifier could accept a JWK with a `d` field (the EC/OKP private scalar)
 
 **Enforcement.** `assertPublicJwk` in `src/jwk.ts` checks the explicit list `[d, p, q, dp, dq, qi, oth, k]` and throws before the key is imported or thumbprinted. `crypto.subtle.importKey` is called with `extractable: false` regardless.
 
-## 10. Memory DoS via oversized proof
+## 10. Memory DoS via oversized proof or access token
 
-A DPoP header has no inherent size limit. A 10 MB proof body forces base64url decoding and JSON parse work for nothing.
+A DPoP header has no inherent size limit. A 10 MB proof body forces base64url decoding and JSON parse work for nothing. A multi-megabyte `Authorization: DPoP <token>` value forces a TextEncoder + SHA-256 pass during `ath` verification.
 
-**Defense.** None at the spec level. Deployments are expected to bound header sizes at the edge.
+**Defense.** None at the spec level. Deployments are expected to bound input at the edge as well, but the middleware no longer assumes that.
 
-**Enforcement.** **None in this middleware yet.** Planned for v0.2: a configurable `maxProofBytes` that short-circuits before parsing.
+**Enforcement.** Both inputs are size-bounded before any decode or crypto:
 
-**Caller's job.** Today, cap header sizes at the CDN, reverse proxy, or platform layer. Cloudflare Workers and most managed runtimes already enforce a header size ceiling well below abuse territory. Self-hosted deployments behind nginx should set `large_client_header_buffers` defensively.
+- `maxProofSize` (default **8192 bytes**) caps the `DPoP` header — checked immediately after the presence check, before `parseProof`.
+- `maxAccessTokenSize` (default **4096 bytes**) caps the resolved access-token string — checked before `computeAth` runs SHA-256 over it.
+
+Both limits are byte-counted via `TextEncoder` so multi-byte payloads cannot bypass them by character-counting.
+
+**Caller's job.** Tune the defaults if your access tokens are deliberately large (some opaque or encrypted tokens can exceed 4 KB). Continue to apply edge-level header caps as defense-in-depth — the middleware bounds reach the application layer; CDNs and ingresses bound reach the network layer.
 
 ## 11. MitM proof / token capture
 
@@ -191,12 +201,17 @@ A few things the middleware does that are not threats by themselves but reduce t
 
 These are honest gaps, not threat-model dismissals. Each is something a determined operator may need to mitigate at a different layer or wait for a future release.
 
-- **No server-issued nonce challenge.** RFC 9449 §8 lets a resource server return `WWW-Authenticate: DPoP error="use_dpop_nonce"` to force the client to include a server-chosen `nonce` claim in the next proof. This shrinks the replay window from `iatTolerance` to "first request after challenge". `hono-dpop` does not emit this challenge or validate the `nonce` claim. The error-code surface in `src/errors.ts` does not yet include a constructor for it.
-- **No built-in proof-size cap.** See threat #10. `parseProof` does not check input length before base64url decode.
-- **No automatic `cnf.jkt` comparison helper.** The middleware exposes `proof.jkt` but does not compare it to anything — it cannot, since it does not know your access-token format. Callers must wire this themselves. A future helper could take a JWT verifier callback and do the comparison automatically.
-- **Time injection.** `verifyProofClaims` reads `Date.now()` directly via the middleware; there is no `now` option for tests or clock-skew compensation beyond `iatTolerance`. Tests work around this by mocking `Date.now`, but a runtime override is not exposed.
 - **No JWS header allowlist beyond `typ` / `alg` / `jwk`.** Extra header fields (e.g., `kid`, `x5c`) are tolerated and ignored. The spec does not mandate rejection, but a stricter posture would refuse anything unrecognized.
 - **No structured logging hooks.** Failures throw `DPoPProofError` carrying the `ProblemDetail`, but there is no per-failure metric or hook beyond the optional `onError`. Operators wanting per-cause counters must instrument via `onError` themselves.
+- **No `dpop_jkt` request-parameter handling.** RFC 9449 §10 binds an authorization request to a key by carrying the thumbprint in `dpop_jkt`. That is the authorization server's job; this middleware is resource-server-only and does not implement it. Pair `hono-dpop` with an AS that does.
+- **`jtiTtl` and `iatTolerance` are independent.** The replay cache remembers a `jti` for `jtiTtl` (default 5 min) regardless of `iatTolerance` (default 60 s). This is conservative — a valid proof at the edge of the iat window still cannot be replayed for the full jti window — but operators tuning `iatTolerance` higher should keep `jtiTtl ≥ 2 × iatTolerance` to avoid a window where a captured proof is iat-valid but already evicted from the replay cache.
+
+### Previously listed, now resolved
+
+- ~~No server-issued nonce challenge~~ — implemented via `nonceProvider`. See threat #12, RFC 9449 §8.
+- ~~No built-in proof-size cap~~ — implemented via `maxProofSize` and `maxAccessTokenSize`. See threat #10.
+- ~~No automatic `cnf.jkt` comparison helper~~ — `assertJktBinding` and `verifyJktBinding` ship in `src/jkt-binding.ts`.
+- ~~Time injection~~ — `clock` option exposed on the middleware for tests and clock-skew compensation.
 
 ## Closing the binding loop: comparing `jkt` to `cnf.jkt`
 
@@ -242,7 +257,7 @@ A short list of things to verify before relying on this middleware in production
 - [ ] If you use `memoryNonceStore` with a `maxSize`, you have headroom: peak QPS × `jtiTtl` is well below `maxSize`. Otherwise FIFO eviction can let a `jti` be replayed (threat #1).
 - [ ] Your `nonceStore.check` implementation is genuinely atomic. Test it under contention (e.g., 100 concurrent calls with the same `jti` — exactly one must return `true`).
 - [ ] If the middleware sits behind a reverse proxy that rewrites the URL or path, you have configured `getRequestUrl` to return the canonical external URL.
-- [ ] You have edge-level header-size caps (CDN, ingress) since the middleware does not yet bound proof size.
+- [ ] You have edge-level header-size caps (CDN, ingress) as defense-in-depth, even though `maxProofSize` / `maxAccessTokenSize` already bound the application-layer reach.
 - [ ] You serve only over TLS 1.3.
 - [ ] Your access tokens carry a `cnf.jkt` claim. (If they do not, you are running DPoP with no binding.)
 - [ ] You have decided whether to set `requireAccessToken: true`. The default of `false` is correct for routes that publish a `jkt` for later use; for protected APIs you almost always want it `true`.
