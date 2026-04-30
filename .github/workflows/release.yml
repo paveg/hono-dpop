@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      statuses: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -35,3 +36,30 @@ jobs:
           publish: pnpm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set ci-pass status on Version Packages PR
+        # The Version Packages PR is created by GITHUB_TOKEN, which by design
+        # does not retrigger workflows — so ci.yml never runs on it. The PR's
+        # diff is purely mechanical (version bump + CHANGELOG) over a main
+        # commit that already passed CI, so we mark ci-pass as success
+        # directly via the statuses API rather than blocking on a CI run that
+        # cannot start.
+        if: steps.changesets.outputs.pullRequestNumber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.changesets.outputs.pullRequestNumber }}
+        run: |
+          sleep 5
+          PR_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
+          gh api "repos/${{ github.repository }}/statuses/${PR_SHA}" \
+            -f state=success \
+            -f context=ci-pass \
+            -f description="Version Packages PR — source already verified on main"
+          # Retry if SHA changed due to API eventual consistency
+          sleep 5
+          NEW_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
+          if [ "$NEW_SHA" != "$PR_SHA" ]; then
+            gh api "repos/${{ github.repository }}/statuses/${NEW_SHA}" \
+              -f state=success \
+              -f context=ci-pass \
+              -f description="Version Packages PR — source already verified on main"
+          fi

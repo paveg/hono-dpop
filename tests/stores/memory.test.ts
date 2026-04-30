@@ -170,4 +170,37 @@ describe("memoryNonceStore", () => {
 			expect(store.size).toBe(1000);
 		});
 	});
+
+	describe("default maxSize", () => {
+		it("default maxSize evicts after 100_000 entries", async () => {
+			const store = memoryNonceStore();
+			const exp = Date.now() + 60_000;
+			for (let i = 0; i < 100_001; i++) {
+				await store.check(`jti-${i}`, exp);
+			}
+			expect(store.size).toBe(100_000);
+		});
+
+		it("default eviction allows replay of evicted jti", async () => {
+			const store = memoryNonceStore({ sweepInterval: Number.POSITIVE_INFINITY });
+			const exp = Date.now() + 60_000;
+			// First entry — will become the oldest and be evicted once we exceed cap
+			expect(await store.check("first", exp)).toBe(true);
+			for (let i = 0; i < 100_000; i++) {
+				await store.check(`jti-${i}`, exp);
+			}
+			expect(store.size).toBe(100_000);
+			// "first" was evicted by FIFO and may now be re-acquired (returns true)
+			expect(await store.check("first", exp)).toBe(true);
+		});
+
+		it("explicit maxSize is honored over the default", async () => {
+			const store = memoryNonceStore({ maxSize: 50 });
+			const exp = Date.now() + 60_000;
+			for (let i = 0; i < 60; i++) {
+				await store.check(`jti-${i}`, exp);
+			}
+			expect(store.size).toBe(50);
+		});
+	});
 });
