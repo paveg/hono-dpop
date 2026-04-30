@@ -745,3 +745,63 @@ describe("parseProof — typ and alg fine boundaries", () => {
 		expect(() => parseProof(jwt, ALL)).toThrow(/unsupported alg/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Extra JWS header fields
+//
+// RFC 9449 §4.2 lists typ / alg / jwk as the required header fields for a
+// DPoP proof. Real-world DPoP clients (e.g. panva/dpop) routinely emit
+// additional standard JWS header fields such as `kid`, `x5c`, or `cty` —
+// parseProof currently tolerates and ignores these. These tests pin that
+// tolerance as a contract: a future "tighten" change must update them with
+// intent rather than silently rejecting valid proofs from existing clients.
+// ---------------------------------------------------------------------------
+
+describe("parseProof — extra JWS header fields tolerated", () => {
+	const validJwk = { kty: "EC", crv: "P-256", x: "x", y: "y" };
+	const validPayload = { jti: "a", htm: "GET", htu: "https://x", iat: 0 };
+	const buildJwt = (header: object) =>
+		`${base64urlEncode(JSON.stringify(header))}.${base64urlEncode(JSON.stringify(validPayload))}.AA`;
+
+	it("tolerates extra JWS header fields like kid, x5c, cty alongside required typ/alg/jwk", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			kid: "abc",
+			x5c: ["MIIB..."],
+			cty: "JWT",
+		});
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
+	it("does not leak extra header fields into parsed.header", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			kid: "abc",
+			x5c: ["MIIB..."],
+			cty: "JWT",
+		});
+		const parsed = parseProof(jwt, ALL);
+		// parsed.header is statically typed { typ, alg, jwk } — assert at runtime
+		// that no other keys ride along.
+		expect(Object.keys(parsed.header).sort()).toEqual(["alg", "jwk", "typ"]);
+		expect((parsed.header as Record<string, unknown>).kid).toBeUndefined();
+		expect((parsed.header as Record<string, unknown>).x5c).toBeUndefined();
+		expect((parsed.header as Record<string, unknown>).cty).toBeUndefined();
+	});
+
+	it("tolerates an empty-object extra field (header.foo = {})", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			foo: {},
+		});
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+		const parsed = parseProof(jwt, ALL);
+		expect((parsed.header as Record<string, unknown>).foo).toBeUndefined();
+	});
+});
