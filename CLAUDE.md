@@ -81,4 +81,8 @@ ES256, ES384, ES512, RS256, RS384, RS512, PS256, PS384, PS512, EdDSA. `none`, `H
 - [ADR-0002: RFC 9457 Problem Details](./docs/adr/0002-rfc-9457-problem-details.md) — error format + optional hono-problem-details integration
 - [ADR-0003: 401 for all proof failures](./docs/adr/0003-401-for-all-proof-failures.md) — RFC 9449 §7.1 convention
 - [ADR-0004: jti replay via pluggable store](./docs/adr/0004-jti-replay-via-pluggable-store.md) — single-method `check(jti, expiresAt)` interface
+- [ADR-0005: pluggable nonce provider](./docs/adr/0005-pluggable-nonce-provider.md) — `issueNonce` / `isValid` interface with previous-nonce grace
+- [ADR-0006: htu comparison policy](./docs/adr/0006-htu-comparison-policy.md) — `strict` default, opt-in trailing-slash relaxation
+- [ADR-0007: input size limits](./docs/adr/0007-input-size-limits.md) — `maxProofSize` 8192 / `maxAccessTokenSize` 4096 defaults
+- [ADR-0008: RFC 9758 Ed25519 acceptance](./docs/adr/0008-rfc-9758-ed25519-acceptance.md) — accept `EdDSA` and `Ed25519` as equivalent
 - [Threat model](./docs/security/threat-model.md) — what we defend, what's left to the caller
