@@ -1,7 +1,10 @@
 import type { DPoPNonceStore } from "./types.js";
 
 export interface MemoryNonceStoreOptions {
-	/** Maximum entries before FIFO eviction of the oldest entry. */
+	/**
+	 * Maximum entries before FIFO eviction of the oldest entry. Default: 100_000.
+	 * Set to a higher value if your peak QPS × jtiTtl exceeds this.
+	 */
 	maxSize?: number;
 	/** Minimum interval between background sweeps, in milliseconds (default: 60_000). */
 	sweepInterval?: number;
@@ -13,9 +16,10 @@ export interface MemoryNonceStore extends DPoPNonceStore {
 }
 
 const DEFAULT_SWEEP_INTERVAL = 60_000;
+const DEFAULT_MAX_SIZE = 100_000;
 
 export function memoryNonceStore(options: MemoryNonceStoreOptions = {}): MemoryNonceStore {
-	const maxSize = options.maxSize;
+	const maxSize = options.maxSize ?? DEFAULT_MAX_SIZE;
 	const sweepInterval = options.sweepInterval ?? DEFAULT_SWEEP_INTERVAL;
 	const map = new Map<string, number>();
 	let lastSweep = Number.NEGATIVE_INFINITY;
@@ -42,7 +46,7 @@ export function memoryNonceStore(options: MemoryNonceStoreOptions = {}): MemoryN
 				return false;
 			}
 			map.set(jti, expiresAt);
-			if (maxSize !== undefined && map.size > maxSize) {
+			if (map.size > maxSize) {
 				const oldest = map.keys().next().value;
 				if (oldest !== undefined && oldest !== jti) map.delete(oldest);
 			}
