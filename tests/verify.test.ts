@@ -240,6 +240,22 @@ describe("verifyProofClaims", () => {
 		).toThrow(/htm/);
 	});
 
+	// RFC 9110 §9.1: HTTP method tokens are case-sensitive. A proof signed with
+	// `htm: "post"` must not be accepted against a `POST` request. Lock this in
+	// against accidental case-insensitive normalization in future refactors.
+	it("rejects htm with mismatched case (RFC 9110 §9.1)", async () => {
+		const { jwt } = await makeValidProof({ htm: "post" });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: "POST",
+				htu: parsed.payload.htu,
+				now: nowSeconds(),
+				iatTolerance: 60,
+			}),
+		).toThrow(/htm/);
+	});
+
 	it("rejects htu mismatch", async () => {
 		const { jwt } = await makeValidProof({ htu: "https://api.example.com/x" });
 		const parsed = parseProof(jwt, ALL);
