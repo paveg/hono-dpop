@@ -1,4 +1,4 @@
-import { base64urlEncode } from "./base64url.js";
+import { base64urlDecode, base64urlEncode } from "./base64url.js";
 
 export type JwsAlgorithm =
 	| "ES256"
@@ -10,7 +10,8 @@ export type JwsAlgorithm =
 	| "PS256"
 	| "PS384"
 	| "PS512"
-	| "EdDSA";
+	| "EdDSA"
+	| "Ed25519";
 
 export const SUPPORTED_ALGORITHMS = [
 	"ES256",
@@ -22,7 +23,12 @@ export const SUPPORTED_ALGORITHMS = [
 	"PS256",
 	"PS384",
 	"PS512",
+	// `EdDSA` is the RFC 8037 / RFC 9449 identifier. `Ed25519` is the more
+	// specific identifier introduced by RFC 9758 ("Fully-Specified Algorithms
+	// for JOSE and COSE", 2025) — same crypto, different alg string. Verifiers
+	// should accept both for forward compatibility.
 	"EdDSA",
+	"Ed25519",
 ] as const satisfies readonly JwsAlgorithm[];
 
 export interface EcPublicJwk {
@@ -57,8 +63,12 @@ export function assertPublicJwk(jwk: unknown): asserts jwk is PublicJwk {
 		throw new TypeError("jwk must be an object");
 	}
 	const j = jwk as Record<string, unknown>;
+	// Use own-property check so a polluted Object.prototype cannot cause
+	// false rejection of an otherwise valid public jwk.
 	for (const f of PRIVATE_FIELDS) {
-		if (f in j) throw new TypeError(`jwk must not contain private field "${f}"`);
+		if (Object.prototype.hasOwnProperty.call(j, f)) {
+			throw new TypeError(`jwk must not contain private field "${f}"`);
+		}
 	}
 	switch (j.kty) {
 		case "EC":
@@ -69,11 +79,31 @@ export function assertPublicJwk(jwk: unknown): asserts jwk is PublicJwk {
 				throw new TypeError("EC jwk requires x and y");
 			}
 			return;
-		case "RSA":
+		case "RSA": {
 			if (typeof j.n !== "string" || typeof j.e !== "string") {
 				throw new TypeError("RSA jwk requires n and e");
 			}
+			let nBytes: Uint8Array;
+			try {
+				nBytes = base64urlDecode(j.n);
+			} catch {
+				throw new TypeError("RSA jwk has malformed n (not valid base64url)");
+			}
+			// RSA modulus length policy:
+			//   < 256 bytes (2048 bits): cryptographically weak — reject.
+			//   > 512 bytes (4096 bits): excessive — DoS amplification via slow verify.
+			if (nBytes.length < 256) {
+				throw new TypeError(
+					`RSA jwk modulus must be at least 2048 bits; got ${nBytes.length * 8} bits`,
+				);
+			}
+			if (nBytes.length > 512) {
+				throw new TypeError(
+					`RSA jwk modulus must not exceed 4096 bits; got ${nBytes.length * 8} bits`,
+				);
+			}
 			return;
+		}
 		case "OKP":
 			if (j.crv !== "Ed25519") {
 				throw new TypeError("OKP jwk only supports Ed25519");
@@ -156,6 +186,10 @@ const ALG: Record<JwsAlgorithm, AlgorithmDescriptor> = {
 		importParams: { name: "Ed25519" },
 		verifyParams: { name: "Ed25519" },
 	},
+	Ed25519: {
+		importParams: { name: "Ed25519" },
+		verifyParams: { name: "Ed25519" },
+	},
 };
 
 export function isSupportedAlgorithm(alg: string): alg is JwsAlgorithm {
@@ -179,7 +213,10 @@ export function assertAlgMatchesJwk(alg: JwsAlgorithm, jwk: PublicJwk): void {
 		if (jwk.kty !== "RSA") throw new TypeError(`alg ${alg} requires RSA jwk`);
 		return;
 	}
-	if (jwk.kty !== "OKP") throw new TypeError("alg EdDSA requires OKP jwk");
+	// EdDSA (RFC 8037) and Ed25519 (RFC 9758) — both use the same Ed25519 crypto.
+	if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519") {
+		throw new TypeError(`alg ${alg} requires OKP jwk with crv Ed25519`);
+	}
 }
 
 export async function importPublicJwk(jwk: PublicJwk, alg: JwsAlgorithm): Promise<CryptoKey> {
