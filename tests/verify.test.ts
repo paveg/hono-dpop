@@ -24,13 +24,7 @@ const GOOD_HEADER = base64urlEncode(
 );
 
 async function makeValidProof(
-	opts: {
-		now?: number;
-		htm?: string;
-		htu?: string;
-		ath?: string;
-		jti?: string;
-	} = {},
+	opts: { now?: number; htm?: string; htu?: string; ath?: string; jti?: string } = {},
 ) {
 	const keyPair = await generateKeyPair("ES256");
 	const jwt = await signProof({

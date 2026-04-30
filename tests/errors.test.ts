@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	clampHttpStatus,
 	DPoPErrors,
 	DPoPProofError,
-	clampHttpStatus,
 	problemResponse,
 	wwwAuthenticateHeader,
 } from "../src/errors.js";

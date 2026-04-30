@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { base64urlEncode } from "../src/base64url.js";
 import {
-	SUPPORTED_ALGORITHMS,
 	assertAlgMatchesJwk,
 	assertPublicJwk,
 	importPublicJwk,
 	isSupportedAlgorithm,
 	jwkThumbprint,
+	SUPPORTED_ALGORITHMS,
 	verifyParamsFor,
 } from "../src/jwk.js";
 import { exportPublicJwk, generateKeyPair } from "./helpers.js";
@@ -346,7 +346,8 @@ describe("assertPublicJwk — prototype-pollution resilience (boundary)", () => 
 			proto.d = "x";
 			expect(() => assertPublicJwk({ kty: "EC", crv: "P-256", x: "abc", y: "def" })).not.toThrow();
 		} finally {
-			// biome-ignore lint/performance/noDelete: must remove polluted property, not set undefined
+			// Must remove the polluted property entirely; setting it to undefined
+			// would leave an own property on Object.prototype and break later tests.
 			delete proto.d;
 		}
 	});

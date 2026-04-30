@@ -8,6 +8,18 @@ import type { DPoPOptions } from "../src/types.js";
 import { computeAth } from "../src/verify.js";
 import { exportPublicJwk, freshJti, generateKeyPair, nowSeconds, signProof } from "./helpers.js";
 
+// Tamper the last 2 base64url chars of the signature so verification fails.
+// Picks a replacement that differs from the original — without this guard,
+// a randomly generated proof whose signature happens to end in "AA" would
+// produce a no-op tamper (~1/4096 of base64url char pairs), making the test
+// non-deterministic across CI runs.
+function tamperSignature(jwt: string): string {
+	const [h, p, s] = jwt.split(".");
+	const last2 = s.slice(-2);
+	const replacement = last2 === "AA" ? "BB" : "AA";
+	return `${h}.${p}.${s.slice(0, -2)}${replacement}`;
+}
+
 function createApp(opts: Partial<DPoPOptions> = {}) {
 	const nonceStore = opts.nonceStore ?? memoryNonceStore();
 	const app = new Hono();
@@ -204,8 +216,7 @@ describe("dpop middleware", () => {
 	it("rejects bad signature", async () => {
 		const { app } = createApp();
 		const { jwt } = await makeProof();
-		const parts = jwt.split(".");
-		const bad = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+		const bad = tamperSignature(jwt);
 		const res = await app.request("https://localhost/api/me", { headers: { DPoP: bad } });
 		expect(res.status).toBe(401);
 		expect((await res.json()).detail).toMatch(/signature/);
@@ -432,8 +443,7 @@ describe("dpop middleware", () => {
 			// with a "signature" detail. Because the size check runs first, we
 			// expect the size-rejection detail instead.
 			const { jwt } = await makeProof();
-			const parts = jwt.split(".");
-			const bad = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+			const bad = tamperSignature(jwt);
 			const huge = "x".repeat(50_000);
 			const res = await app.request("https://localhost/api/me", {
 				headers: { DPoP: bad, Authorization: `DPoP ${huge}` },
@@ -448,8 +458,7 @@ describe("dpop middleware", () => {
 		it("still rejects invalid signature normally when access token is within size", async () => {
 			const { app } = createApp();
 			const { jwt } = await makeProof();
-			const parts = jwt.split(".");
-			const bad = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+			const bad = tamperSignature(jwt);
 			const res = await app.request("https://localhost/api/me", {
 				headers: { DPoP: bad, Authorization: "DPoP small-token" },
 			});
