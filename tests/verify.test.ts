@@ -120,11 +120,14 @@ describe("parseProof — header failures", () => {
 	});
 
 	it("rejects alg/jwk mismatch", () => {
+		// Use a 2048-bit RSA modulus stub so that assertPublicJwk's length policy
+		// passes and the alg/jwk mismatch from assertAlgMatchesJwk is what triggers.
+		const validN = base64urlEncode(new Uint8Array(256).fill(0xff));
 		const headerB64 = base64urlEncode(
 			JSON.stringify({
 				typ: "dpop+jwt",
 				alg: "ES256",
-				jwk: { kty: "RSA", n: "n", e: "e" },
+				jwk: { kty: "RSA", n: validN, e: "AQAB" },
 			}),
 		);
 		const jwt = `${headerB64}.${base64urlEncode('{"jti":"a","htm":"GET","htu":"https://x","iat":0}')}.x`;
