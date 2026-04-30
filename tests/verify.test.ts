@@ -120,11 +120,14 @@ describe("parseProof — header failures", () => {
 	});
 
 	it("rejects alg/jwk mismatch", () => {
+		// Use a 2048-bit RSA modulus stub so that assertPublicJwk's length policy
+		// passes and the alg/jwk mismatch from assertAlgMatchesJwk is what triggers.
+		const validN = base64urlEncode(new Uint8Array(256).fill(0xff));
 		const headerB64 = base64urlEncode(
 			JSON.stringify({
 				typ: "dpop+jwt",
 				alg: "ES256",
-				jwk: { kty: "RSA", n: "n", e: "e" },
+				jwk: { kty: "RSA", n: validN, e: "AQAB" },
 			}),
 		);
 		const jwt = `${headerB64}.${base64urlEncode('{"jti":"a","htm":"GET","htu":"https://x","iat":0}')}.x`;
@@ -230,6 +233,22 @@ describe("verifyProofClaims", () => {
 		expect(() =>
 			verifyProofClaims(parsed, {
 				htm: "GET",
+				htu: parsed.payload.htu,
+				now: nowSeconds(),
+				iatTolerance: 60,
+			}),
+		).toThrow(/htm/);
+	});
+
+	// RFC 9110 §9.1: HTTP method tokens are case-sensitive. A proof signed with
+	// `htm: "post"` must not be accepted against a `POST` request. Lock this in
+	// against accidental case-insensitive normalization in future refactors.
+	it("rejects htm with mismatched case (RFC 9110 §9.1)", async () => {
+		const { jwt } = await makeValidProof({ htm: "post" });
+		const parsed = parseProof(jwt, ALL);
+		expect(() =>
+			verifyProofClaims(parsed, {
+				htm: "POST",
 				htu: parsed.payload.htu,
 				now: nowSeconds(),
 				iatTolerance: 60,
@@ -743,5 +762,65 @@ describe("parseProof — typ and alg fine boundaries", () => {
 			jwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
 		});
 		expect(() => parseProof(jwt, ALL)).toThrow(/unsupported alg/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Extra JWS header fields
+//
+// RFC 9449 §4.2 lists typ / alg / jwk as the required header fields for a
+// DPoP proof. Real-world DPoP clients (e.g. panva/dpop) routinely emit
+// additional standard JWS header fields such as `kid`, `x5c`, or `cty` —
+// parseProof currently tolerates and ignores these. These tests pin that
+// tolerance as a contract: a future "tighten" change must update them with
+// intent rather than silently rejecting valid proofs from existing clients.
+// ---------------------------------------------------------------------------
+
+describe("parseProof — extra JWS header fields tolerated", () => {
+	const validJwk = { kty: "EC", crv: "P-256", x: "x", y: "y" };
+	const validPayload = { jti: "a", htm: "GET", htu: "https://x", iat: 0 };
+	const buildJwt = (header: object) =>
+		`${base64urlEncode(JSON.stringify(header))}.${base64urlEncode(JSON.stringify(validPayload))}.AA`;
+
+	it("tolerates extra JWS header fields like kid, x5c, cty alongside required typ/alg/jwk", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			kid: "abc",
+			x5c: ["MIIB..."],
+			cty: "JWT",
+		});
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+	});
+
+	it("does not leak extra header fields into parsed.header", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			kid: "abc",
+			x5c: ["MIIB..."],
+			cty: "JWT",
+		});
+		const parsed = parseProof(jwt, ALL);
+		// parsed.header is statically typed { typ, alg, jwk } — assert at runtime
+		// that no other keys ride along.
+		expect(Object.keys(parsed.header).sort()).toEqual(["alg", "jwk", "typ"]);
+		expect((parsed.header as Record<string, unknown>).kid).toBeUndefined();
+		expect((parsed.header as Record<string, unknown>).x5c).toBeUndefined();
+		expect((parsed.header as Record<string, unknown>).cty).toBeUndefined();
+	});
+
+	it("tolerates an empty-object extra field (header.foo = {})", () => {
+		const jwt = buildJwt({
+			typ: "dpop+jwt",
+			alg: "ES256",
+			jwk: validJwk,
+			foo: {},
+		});
+		expect(() => parseProof(jwt, ALL)).not.toThrow();
+		const parsed = parseProof(jwt, ALL);
+		expect((parsed.header as Record<string, unknown>).foo).toBeUndefined();
 	});
 });

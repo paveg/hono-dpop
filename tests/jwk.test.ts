@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { base64urlEncode } from "../src/base64url.js";
 import {
 	SUPPORTED_ALGORITHMS,
 	assertAlgMatchesJwk,
@@ -47,7 +48,8 @@ describe("assertPublicJwk", () => {
 
 	it("RSA requires n and e", () => {
 		expect(() => assertPublicJwk({ kty: "RSA" })).toThrow(/n and e/);
-		expect(() => assertPublicJwk({ kty: "RSA", n: "n", e: "e" })).not.toThrow();
+		const validN = base64urlEncode(new Uint8Array(256).fill(0xff));
+		expect(() => assertPublicJwk({ kty: "RSA", n: validN, e: "AQAB" })).not.toThrow();
 	});
 
 	it("OKP requires Ed25519 crv and x", () => {
@@ -102,6 +104,18 @@ describe("assertAlgMatchesJwk", () => {
 		);
 		expect(() =>
 			assertAlgMatchesJwk("EdDSA", { kty: "OKP", crv: "Ed25519", x: "x" }),
+		).not.toThrow();
+	});
+
+	it("Ed25519 (RFC 9758 fully-specified alg) requires OKP with crv Ed25519", () => {
+		expect(() => assertAlgMatchesJwk("Ed25519", { kty: "RSA", n: "n", e: "e" })).toThrow(
+			/requires OKP/,
+		);
+		expect(() =>
+			assertAlgMatchesJwk("Ed25519", { kty: "EC", crv: "P-256", x: "x", y: "y" }),
+		).toThrow(/requires OKP/);
+		expect(() =>
+			assertAlgMatchesJwk("Ed25519", { kty: "OKP", crv: "Ed25519", x: "x" }),
 		).not.toThrow();
 	});
 });
@@ -291,6 +305,110 @@ describe("jwkThumbprint — RFC 7638 robustness (boundary)", () => {
 			alg: "RS256",
 			kid: "2011-04-29",
 			use: "sig",
+		} as const;
+		expect(await jwkThumbprint(jwk)).toBe("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
+	});
+});
+
+describe("assertPublicJwk — RSA modulus length policy (boundary)", () => {
+	function rsaJwkWithModulusBytes(byteLen: number): { kty: "RSA"; n: string; e: string } {
+		const bytes = new Uint8Array(byteLen).fill(0xff);
+		return { kty: "RSA", n: base64urlEncode(bytes), e: "AQAB" };
+	}
+
+	it("rejects RSA jwk whose modulus exceeds 4096 bits (>512 bytes)", () => {
+		expect(() => assertPublicJwk(rsaJwkWithModulusBytes(513))).toThrow(/must not exceed 4096 bits/);
+	});
+
+	it("rejects RSA jwk whose modulus is below 2048 bits (<256 bytes)", () => {
+		expect(() => assertPublicJwk(rsaJwkWithModulusBytes(255))).toThrow(/at least 2048 bits/);
+	});
+
+	it("accepts RSA jwk at exactly 2048-bit (256 byte) and 4096-bit (512 byte)", () => {
+		expect(() => assertPublicJwk(rsaJwkWithModulusBytes(256))).not.toThrow();
+		expect(() => assertPublicJwk(rsaJwkWithModulusBytes(512))).not.toThrow();
+	});
+
+	it("rejects RSA jwk whose n is not valid base64url", () => {
+		// Characters outside the base64url alphabet trigger base64urlDecode to throw,
+		// which assertPublicJwk catches and rethrows as a typed error.
+		expect(() => assertPublicJwk({ kty: "RSA", n: "@@invalid@@", e: "AQAB" })).toThrow(
+			/malformed n/,
+		);
+	});
+});
+
+describe("assertPublicJwk — prototype-pollution resilience (boundary)", () => {
+	it("does not throw on valid jwk when Object.prototype carries a private field", () => {
+		// biome-ignore lint/suspicious/noExplicitAny: intentional prototype pollution for test
+		const proto = Object.prototype as any;
+		try {
+			proto.d = "x";
+			expect(() => assertPublicJwk({ kty: "EC", crv: "P-256", x: "abc", y: "def" })).not.toThrow();
+		} finally {
+			// biome-ignore lint/performance/noDelete: must remove polluted property, not set undefined
+			delete proto.d;
+		}
+	});
+});
+
+describe("assertPublicJwk — extra fields tolerance (boundary T-1a)", () => {
+	it("tolerates extra fields like use, kid, alg in EC jwk", () => {
+		expect(() =>
+			assertPublicJwk({
+				kty: "EC",
+				crv: "P-256",
+				x: "x",
+				y: "y",
+				use: "sig",
+				kid: "key-1",
+				alg: "ES256",
+			}),
+		).not.toThrow();
+	});
+
+	it("tolerates extra fields like use, kid, alg in RSA jwk", () => {
+		const bytes = new Uint8Array(256).fill(0xff);
+		expect(() =>
+			assertPublicJwk({
+				kty: "RSA",
+				n: base64urlEncode(bytes),
+				e: "AQAB",
+				use: "sig",
+				kid: "key-1",
+				alg: "RS256",
+			}),
+		).not.toThrow();
+	});
+
+	it("tolerates extra fields like use, kid, alg in OKP jwk", () => {
+		expect(() =>
+			assertPublicJwk({
+				kty: "OKP",
+				crv: "Ed25519",
+				x: "x",
+				use: "sig",
+				kid: "key-1",
+				alg: "EdDSA",
+			}),
+		).not.toThrow();
+	});
+});
+
+describe("assertAlgMatchesJwk — round-trip for all 10 algorithms (boundary T-1d)", () => {
+	it.each(SUPPORTED_ALGORITHMS)("accepts a freshly generated jwk for %s", async (alg) => {
+		const { publicKey } = await generateKeyPair(alg);
+		const jwk = await exportPublicJwk(publicKey);
+		expect(() => assertAlgMatchesJwk(alg, jwk)).not.toThrow();
+	});
+});
+
+describe("jwkThumbprint — RFC 7638 §3.1 published vector (boundary T-1e)", () => {
+	it("matches RFC 7638 §3.1 RSA published vector", async () => {
+		const jwk = {
+			kty: "RSA",
+			n: "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw",
+			e: "AQAB",
 		} as const;
 		expect(await jwkThumbprint(jwk)).toBe("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
 	});

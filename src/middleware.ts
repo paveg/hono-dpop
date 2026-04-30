@@ -8,7 +8,12 @@ import {
 	problemResponse,
 	wwwAuthenticateHeader,
 } from "./errors.js";
-import { type JwsAlgorithm, SUPPORTED_ALGORITHMS, jwkThumbprint } from "./jwk.js";
+import {
+	type JwsAlgorithm,
+	SUPPORTED_ALGORITHMS,
+	isSupportedAlgorithm,
+	jwkThumbprint,
+} from "./jwk.js";
 import type { DPoPEnv, DPoPOptions, DPoPVerifiedProof } from "./types.js";
 import {
 	type ParsedProof,
@@ -50,6 +55,19 @@ export function dpop(options: DPoPOptions) {
 		htuComparison = "strict",
 		allowFutureIat = false,
 	} = options;
+
+	// Fail fast on unsupported algs at factory time. Without this, a TypeScript
+	// escape hatch (`["EvilAlg" as any]`) would survive factory creation and
+	// only surface at request time as "unsupported alg", which is harder to
+	// catch in development and lets a misconfiguration ship to production.
+	for (const alg of algorithms) {
+		if (!isSupportedAlgorithm(alg)) {
+			throw new TypeError(
+				`Unsupported algorithm in algorithms option: ${String(alg)}. ` +
+					`Allowed: ${SUPPORTED_ALGORITHMS.join(", ")}`,
+			);
+		}
+	}
 
 	const allowed = new Set<JwsAlgorithm>(algorithms);
 	const algsHint = algorithms.join(" ");
@@ -128,8 +146,13 @@ export function dpop(options: DPoPOptions) {
 		// flooding from unauthenticated clients.
 		if (nonceProvider && issueNonceOnce) {
 			const nonceClaim = parsed.payload.nonce;
-			const nonceOk =
-				typeof nonceClaim === "string" && (await nonceProvider.isValid(nonceClaim, c));
+			// Always invoke isValid so the request-handling time does not depend on
+			// whether the nonce claim is present. Distinguishing "missing nonce" from
+			// "invalid nonce" by the absence of the provider RPC is a small timing
+			// oracle for shared-store providers (Redis, KV) — close it. Provider
+			// implementations are expected to treat the empty string as invalid.
+			const candidate = typeof nonceClaim === "string" ? nonceClaim : "";
+			const nonceOk = await nonceProvider.isValid(candidate, c);
 			if (!nonceOk) {
 				return errorResponse(DPoPErrors.useNonce(await issueNonceOnce()));
 			}
@@ -195,8 +218,13 @@ async function resolveAccessToken(
 	const space = auth.indexOf(" ");
 	if (space < 0) return undefined;
 	if (auth.slice(0, space).toLowerCase() !== DPOP_AUTH_SCHEME) return undefined;
-	// trim() handles the "DPoP   token" (extra interior whitespace) case. Empty strings
-	// further downstream are caught by `!accessToken` in the requireAccessToken check.
+	// trim() handles the "DPoP   token" (extra interior whitespace) case.
+	// A whitespace-only-after-the-scheme token (e.g. "DPoP    ") cannot reach
+	// this line on the platforms we target: the WHATWG fetch Headers API trims
+	// trailing whitespace from header values before middleware sees them, so
+	// `auth.indexOf(" ")` returns -1 and we exit earlier. The trim here is a
+	// belt-and-braces for proxies that preserve interior whitespace before the
+	// first non-space token byte.
 	return auth.slice(space + 1).trim();
 }
 

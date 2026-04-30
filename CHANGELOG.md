@@ -1,5 +1,28 @@
 # hono-dpop
 
+## 0.2.0
+
+### Minor Changes
+
+- [#15](https://github.com/paveg/hono-dpop/pull/15) [`cfe8941`](https://github.com/paveg/hono-dpop/commit/cfe89415720c1cae6b49a9fa95437ce8b974325d) Thanks [@paveg](https://github.com/paveg)! - Tighten JWK validation and accept the RFC 9758 `Ed25519` JWS algorithm identifier:
+
+  - Enforce RSA modulus length in 2048-4096 bit range. Defends against DoS amplification via giant moduli (16384-bit) causing slow signature verification, and against weak keys (1024-bit and below) being accepted.
+  - Use own-property check for private-field detection (`Object.hasOwnProperty.call` rather than `in`) so a polluted `Object.prototype` cannot cause spurious rejection of valid public JWKs.
+  - Accept `alg: "Ed25519"` (RFC 9758 fully-specified algorithm identifier) in addition to `alg: "EdDSA"` (RFC 8037). Both use the same Ed25519 crypto; verifiers should accept both for forward compatibility with newer DPoP clients. `assertAlgMatchesJwk` now requires `kty: "OKP"` AND `crv: "Ed25519"` for both alg names (was only checking `kty`).
+
+- [#17](https://github.com/paveg/hono-dpop/pull/17) [`771a2a3`](https://github.com/paveg/hono-dpop/commit/771a2a37ad60fa07d240c344ecd7d81fa9d7f134) Thanks [@paveg](https://github.com/paveg)! - `memoryNonceStore()` now defaults `maxSize` to 100,000 entries (was previously unbounded). This prevents OOM under unique-jti flood without an explicit `maxSize` option.
+
+  **Migration**: callers who relied on unbounded growth must now set `memoryNonceStore({ maxSize: <very large number> })` explicitly. Most callers will not need to change anything — the default is sized for typical workloads (peak ~333 jti/sec sustained for 5 minutes).
+
+### Patch Changes
+
+- [#16](https://github.com/paveg/hono-dpop/pull/16) [`ff38445`](https://github.com/paveg/hono-dpop/commit/ff38445df9f1bfaa8fff592ecf65afac2db98966) Thanks [@paveg](https://github.com/paveg)! - Middleware input-boundary hardening:
+
+  - Always call `nonceProvider.isValid` even when the proof's `nonce` claim is missing, removing a small timing oracle that distinguished "missing nonce" from "invalid nonce".
+  - Validate the `algorithms` option at factory time: passing an unsupported value (e.g. via a TypeScript escape hatch) now throws synchronously instead of silently being ignored at request time.
+
+- [#14](https://github.com/paveg/hono-dpop/pull/14) [`e1a6fcc`](https://github.com/paveg/hono-dpop/commit/e1a6fcc9dc9e9add4fe867e4de2cb599c9558a7f) Thanks [@paveg](https://github.com/paveg)! - Add boundary tests asserting that `parseProof` tolerates extra JWS header fields (such as `kid`, `x5c`, `cty`) alongside the required `typ` / `alg` / `jwk`. No behavior change — these tests pin the existing tolerance as a contract so future tightening is a deliberate decision.
+
 ## 0.1.0
 
 ### Minor Changes

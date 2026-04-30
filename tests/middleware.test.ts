@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
+import { base64urlEncode } from "../src/base64url.js";
 import { dpop } from "../src/middleware.js";
 import { memoryNonceStore } from "../src/stores/memory.js";
 import type { DPoPNonceStore, NonceProvider } from "../src/stores/types.js";
 import type { DPoPOptions } from "../src/types.js";
 import { computeAth } from "../src/verify.js";
-import { freshJti, generateKeyPair, nowSeconds, signProof } from "./helpers.js";
+import { exportPublicJwk, freshJti, generateKeyPair, nowSeconds, signProof } from "./helpers.js";
 
 function createApp(opts: Partial<DPoPOptions> = {}) {
 	const nonceStore = opts.nonceStore ?? memoryNonceStore();
@@ -809,6 +810,108 @@ describe("dpop middleware", () => {
 			const { jwt } = await makeProof();
 			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
 			expect(res.status).toBe(200);
+		});
+	});
+
+	describe("input boundary hardening (PR-C)", () => {
+		// L-2: a whitespace-only token after the DPoP scheme must be normalized to
+		// "no token" so that the ath path is never entered with an empty string.
+		// Sanity check: the WHATWG Headers API trims trailing whitespace from
+		// header values, so "DPoP    " arrives at the middleware as "DPoP" with
+		// no space, which `resolveAccessToken` treats as "no DPoP-scheme token
+		// present" and returns undefined. This documents the platform behavior
+		// the middleware is relying on.
+		it('treats Authorization: "DPoP    " (trimmed by Headers API) as missing access token', async () => {
+			const { app } = createApp({ requireAccessToken: true });
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", {
+				headers: { DPoP: jwt, Authorization: "DPoP    " },
+			});
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("MISSING_ACCESS_TOKEN");
+		});
+
+		// L-3: removing the short-circuit eliminates a (small) timing oracle that
+		// distinguishes "no nonce claim" from "invalid nonce claim".
+		it("calls nonceProvider.isValid even when nonce claim is missing", async () => {
+			const calls: Array<string> = [];
+			const provider: NonceProvider = {
+				issueNonce: () => "server-nonce-timing",
+				isValid: (n) => {
+					calls.push(n);
+					return n === "server-nonce-timing";
+				},
+			};
+			const { app } = createApp({ nonceProvider: provider });
+			// Proof has no nonce claim. Pre-fix: isValid is short-circuited.
+			const { jwt } = await makeProof();
+			const res = await app.request("https://localhost/api/me", { headers: { DPoP: jwt } });
+			expect(res.status).toBe(401);
+			expect(((await res.json()) as { code: string }).code).toBe("USE_NONCE");
+			expect(calls.length).toBe(1);
+			// Implementation calls isValid with empty string when the claim is missing.
+			expect(calls[0]).toBe("");
+		});
+
+		// L-4: factory must reject unsupported algorithms synchronously, before any
+		// request is ever served. A TypeScript escape hatch (`as any`) must not be
+		// silently tolerated until the proof's own alg check at request time.
+		it('dpop({ algorithms: ["EvilAlg"] }) throws at factory time', () => {
+			expect(() =>
+				dpop({
+					nonceStore: memoryNonceStore(),
+					algorithms: ["EvilAlg" as unknown as never],
+				}),
+			).toThrow(/EvilAlg/);
+		});
+
+		it('dpop({ algorithms: ["ES256"] }) does not throw (regression)', () => {
+			expect(() =>
+				dpop({
+					nonceStore: memoryNonceStore(),
+					algorithms: ["ES256"],
+				}),
+			).not.toThrow();
+		});
+
+		// T-1b: extra payload claims (exp, iss, sub, custom) on a valid proof are
+		// accepted unchanged. RFC 9449 §4.2 lists required claims but does not
+		// forbid extra ones; lock current tolerant behavior in.
+		it("accepts proof with extra payload claims (exp, iss, sub, custom)", async () => {
+			const keyPair = await generateKeyPair("ES256");
+			const url = "https://localhost/api/me";
+			const jti = freshJti();
+			const iat = nowSeconds();
+			// Hand-roll the JWT so we can include claims that ProofPayload doesn't model.
+			const headerObj = {
+				typ: "dpop+jwt",
+				alg: "ES256" as const,
+				jwk: await exportPublicJwk(keyPair.publicKey),
+			};
+			const payloadObj = {
+				jti,
+				htm: "GET",
+				htu: url,
+				iat,
+				exp: iat + 300,
+				iss: "https://issuer.example",
+				sub: "user-123",
+				custom: { nested: true, list: [1, 2, 3] },
+			};
+			const headerB64 = base64urlEncode(JSON.stringify(headerObj));
+			const payloadB64 = base64urlEncode(JSON.stringify(payloadObj));
+			const signingInput = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+			const sig = await crypto.subtle.sign(
+				{ name: "ECDSA", hash: "SHA-256" },
+				keyPair.privateKey,
+				signingInput,
+			);
+			const jwt = `${headerB64}.${payloadB64}.${base64urlEncode(new Uint8Array(sig))}`;
+			const { app } = createApp();
+			const res = await app.request(url, { headers: { DPoP: jwt } });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { jkt?: string; jti?: string };
+			expect(body.jti).toBe(jti);
 		});
 	});
 });
