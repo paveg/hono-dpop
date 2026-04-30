@@ -62,6 +62,7 @@ function generateParams(
 				hash: "SHA-512",
 			};
 		case "EdDSA":
+		case "Ed25519":
 			return { name: "Ed25519" };
 	}
 }
@@ -85,6 +86,7 @@ function signParams(alg: JwsAlgorithm): AlgorithmIdentifier | EcdsaParams | RsaP
 		case "PS512":
 			return { name: "RSA-PSS", saltLength: 64 };
 		case "EdDSA":
+		case "Ed25519":
 			return "Ed25519";
 	}
 }
