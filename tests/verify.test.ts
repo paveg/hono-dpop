@@ -433,7 +433,13 @@ describe("verifyProofSignature", () => {
 		const parts = jwt.split(".");
 		// Tamper signature, not payload — keeps it a structurally-valid JWT and
 		// guarantees the failure mode is a signature mismatch (not a JSON parse error).
-		const tampered = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`;
+		// Flip the first signature char to a guaranteed-different value so the
+		// tampered signature can never coincide with the original (which a fixed
+		// suffix substitution would, ~1/256 of the time, when ECDSA's random
+		// nonce happens to land on the same suffix).
+		const first = parts[2][0];
+		const replacement = first === "A" ? "B" : "A";
+		const tampered = `${parts[0]}.${parts[1]}.${replacement}${parts[2].slice(1)}`;
 		const parsed = parseProof(tampered, ALL);
 		await expect(verifyProofSignature(parsed)).rejects.toThrow(/signature/);
 	});
