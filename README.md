@@ -29,7 +29,13 @@ yarn add     hono-dpop
 bun  add     hono-dpop
 ```
 
-Works on Node.js ≥20, Cloudflare Workers, Deno, and Bun. Pure Web Crypto — no native bindings, no platform-specific dependencies, runs unchanged on x64 / arm64 / Linux / macOS / Windows.
+Works on Cloudflare Workers, Deno, and Bun in addition to Node.js. Pure Web Crypto — no native bindings, no platform-specific dependencies, runs unchanged on x64 / arm64 / Linux / macOS / Windows.
+
+### Requirements
+
+- Hono `>= 4.0.0` (peer dependency)
+- TypeScript `>= 5.0` — the published `.d.ts` files are CI-tested against TS 5.0, 5.4, 5.7, and 5.9. Older TS versions may work but are not verified.
+- Node.js `>= 22` (for Node.js consumers)
 
 ## Quick Start
 
