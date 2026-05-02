@@ -149,7 +149,7 @@
 		"provenance": true
 	},
 	"engines": {
-		"node": ">=20"
+		"node": ">=22"
 	},
 	"packageManager": "pnpm@10.14.0",
 	"pnpm": {
