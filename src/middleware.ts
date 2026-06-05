@@ -129,22 +129,14 @@ export function dpop(options: DPoPOptions) {
 			throw err;
 		}
 
-		// Lazy + memoized issueNonce: shared between the use_dpop_nonce error
-		// path and the success-path echo so a request triggers at most one
-		// provider RPC. Matters for shared-store providers (Redis, KV) where
-		// each issueNonce() is a network round-trip.
-		let cachedNonce: string | undefined;
-		const issueNonceOnce = nonceProvider
-			? async () => {
-					if (cachedNonce === undefined) cachedNonce = await nonceProvider.issueNonce(c);
-					return cachedNonce;
-				}
-			: undefined;
+		// The error path (use_dpop_nonce) and the success-path echo are mutually
+		// exclusive, so a request invokes the provider at most once — no memo needed.
+		const issueNonce = nonceProvider ? () => nonceProvider.issueNonce(c) : undefined;
 
 		// Nonce challenge (RFC 9449 §8). Run after sig verification so that we
 		// only mint nonces for cryptographically valid proofs — prevents nonce
 		// flooding from unauthenticated clients.
-		if (nonceProvider && issueNonceOnce) {
+		if (nonceProvider && issueNonce) {
 			const nonceClaim = parsed.payload.nonce;
 			// Always invoke isValid so the request-handling time does not depend on
 			// whether the nonce claim is present. Distinguishing "missing nonce" from
@@ -154,7 +146,7 @@ export function dpop(options: DPoPOptions) {
 			const candidate = typeof nonceClaim === "string" ? nonceClaim : "";
 			const nonceOk = await nonceProvider.isValid(candidate, c);
 			if (!nonceOk) {
-				return errorResponse(DPoPErrors.useNonce(await issueNonceOnce()));
+				return errorResponse(DPoPErrors.useNonce(await issueNonce()));
 			}
 		}
 
@@ -196,11 +188,9 @@ export function dpop(options: DPoPOptions) {
 		await next();
 
 		// Echo the current nonce on success so clients learn it without an extra
-		// challenge round-trip (RFC 9449 §8 recommendation). Reuses the cached
-		// value if the use_dpop_nonce path already minted one (it didn't here,
-		// since we reached success — but the closure is still memoized).
-		if (issueNonceOnce) {
-			c.res.headers.set(DPOP_NONCE_HEADER, await issueNonceOnce());
+		// challenge round-trip (RFC 9449 §8 recommendation).
+		if (issueNonce) {
+			c.res.headers.set(DPOP_NONCE_HEADER, await issueNonce());
 		}
 	});
 }

@@ -47,8 +47,9 @@ export function memoryNonceStore(options: MemoryNonceStoreOptions = {}): MemoryN
 			}
 			map.set(jti, expiresAt);
 			if (map.size > maxSize) {
-				const oldest = map.keys().next().value;
-				if (oldest !== undefined && oldest !== jti) map.delete(oldest);
+				// size grew past the cap on this insert, so the oldest key is always a
+				// distinct, older entry than the jti we just added — evict it.
+				map.delete(map.keys().next().value as string);
 			}
 			return true;
 		},
